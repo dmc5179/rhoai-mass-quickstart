@@ -1,0 +1,280 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  Standalone VPC for an OpenShift cluster, single availability zone.
+  Deliberately not owned by any cluster: no kubernetes.io/cluster/*: owned tags
+  are set, so `openshift-install destroy cluster` leaves this VPC intact and it
+  can be reused by a later cluster.
+
+Parameters:
+  InfrastructureName:
+    AllowedPattern: ^([a-zA-Z][a-zA-Z0-9\-]{0,26})$
+    MaxLength: 27
+    MinLength: 1
+    ConstraintDescription: >-
+      Infrastructure name must be alphanumeric, start with a letter, and have a maximum of 27 characters.
+    Description: >-
+      Naming prefix for the resources in this stack. This is only a label - the VPC is not tied to
+      any cluster, so this does not need to match the OpenShift cluster name or infrastructure ID.
+    Type: String
+
+  VpcCidr:
+    AllowedPattern: >-
+      ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-4]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-24.
+    Default: 10.0.0.0/16
+    Description: >-
+      CIDR block for VPC. Do not overlap 100.64.0.0/16, which OVN-Kubernetes uses internally.
+    Type: String
+
+  AvailabilityZone:
+    Description: >-
+      Availability zone for both subnets. Leave blank to use the first AZ in the region.
+      Pin this explicitly if you need an AZ that offers a particular instance type.
+    Default: ""
+    Type: String
+
+  SubnetBits:
+    MinValue: 5
+    MaxValue: 13
+    ConstraintDescription: >-
+      The size of each subnet in each availability zone.
+      (Min: 5 = /27, Max: 13 = /19)
+    Description: >-
+      Size of each subnet to create within the availability zone.
+      (Min: 5 = /27, Max: 13 = /19)
+    Default: 12
+    Type: Number
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: "Network Configuration"
+      Parameters:
+      - VpcCidr
+      - SubnetBits
+    - Label:
+        default: "Availability Zone"
+      Parameters:
+      - AvailabilityZone
+    ParameterLabels:
+      AvailabilityZone:
+        default: "Availability Zone"
+      VpcCidr:
+        default: "VPC CIDR"
+      SubnetBits:
+        default: "Bits Per Subnet"
+
+Conditions:
+  UseFirstAz: !Equals ["", !Ref AvailabilityZone]
+
+Resources:
+  # Tagging policy for this stack:
+  #   - Name tags are set everywhere, for legibility in the AWS console.
+  #   - kubernetes.io/cluster/<name>: owned is deliberately NOT set. The installer
+  #     adds its own kubernetes.io/cluster/<infraID>: shared tag to the subnets it
+  #     uses and removes that tag on destroy, which is what keeps this VPC
+  #     independent of the cluster lifecycle.
+  #   - kubernetes.io/role/elb and kubernetes.io/role/internal-elb ARE set. These
+  #     are not ownership tags; they are how the AWS cloud controller discovers
+  #     which subnets may host a Service of type LoadBalancer. Without them,
+  #     LoadBalancer Services created after install - including the RHOAI MaaS
+  #     gateway - fail with "could not find any suitable subnets for creating the
+  #     ELB". They are safe to leave on a shared VPC.
+
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      CidrBlock: !Ref VpcCidr
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "vpc"]]
+
+  # Subnet CIDRs are carved as if there were three AZs (6 blocks), but only
+  # index 0 and index 3 are used. Adding a second or third AZ later can then
+  # reuse indices 1/2 and 4/5 without renumbering these two subnets.
+  PublicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 6, !Ref SubnetBits]]
+      AvailabilityZone: !If
+      - UseFirstAz
+      - !Select [0, Fn::GetAZs: !Ref "AWS::Region"]
+      - !Ref AvailabilityZone
+      Tags:
+      - Key: "Name"
+        Value: !Join
+        - "-"
+        - - !Ref InfrastructureName
+          - "public"
+          - !If [UseFirstAz, !Select [0, Fn::GetAZs: !Ref "AWS::Region"], !Ref AvailabilityZone]
+      # Marks this subnet as eligible for internet-facing load balancers.
+      - Key: "kubernetes.io/role/elb"
+        Value: "1"
+
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "igw"]]
+
+  GatewayToInternet:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "public"]]
+
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    DependsOn: GatewayToInternet
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 6, !Ref SubnetBits]]
+      AvailabilityZone: !If
+      - UseFirstAz
+      - !Select [0, Fn::GetAZs: !Ref "AWS::Region"]
+      - !Ref AvailabilityZone
+      Tags:
+      - Key: "Name"
+        Value: !Join
+        - "-"
+        - - !Ref InfrastructureName
+          - "private"
+          - !If [UseFirstAz, !Select [0, Fn::GetAZs: !Ref "AWS::Region"], !Ref AvailabilityZone]
+      # Marks this subnet as eligible for internal load balancers.
+      - Key: "kubernetes.io/role/internal-elb"
+        Value: "1"
+
+  PrivateRouteTable1:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "private", !GetAtt PublicSubnet1.AvailabilityZone]]
+
+  PrivateSubnetRouteTableAssociation1:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  NAT1:
+    DependsOn:
+    - GatewayToInternet
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId: !GetAtt EIP1.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "nat", !GetAtt PublicSubnet1.AvailabilityZone]]
+
+  EIP1:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+      Tags:
+      - Key: "Name"
+        Value: !Join ["-", [!Ref InfrastructureName, "eip", !GetAtt PublicSubnet1.AvailabilityZone]]
+
+  Route1:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId:
+        Ref: PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId:
+        Ref: NAT1
+
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action:
+          - '*'
+          Resource:
+          - '*'
+      RouteTableIds:
+      - !Ref PublicRouteTable
+      - !Ref PrivateRouteTable1
+      ServiceName: !Join [".", ["com.amazonaws", !Ref "AWS::Region", "s3"]]
+      VpcId: !Ref VPC
+
+Outputs:
+  VpcId:
+    Description: ID of the new VPC.
+    Value: !Ref VPC
+
+  AvailabilityZone:
+    Description: Availability zone both subnets were created in.
+    Value: !GetAtt PublicSubnet1.AvailabilityZone
+
+  PublicSubnetId:
+    Description: ID of the public subnet.
+    Value: !Ref PublicSubnet1
+
+  PrivateSubnetId:
+    Description: ID of the private subnet.
+    Value: !Ref PrivateSubnet1
+
+  PublicSubnetIds:
+    Description: Subnet IDs of the public subnets, as a comma-separated list.
+    Value: !Ref PublicSubnet1
+
+  PrivateSubnetIds:
+    Description: Subnet IDs of the private subnets, as a comma-separated list.
+    Value: !Ref PrivateSubnet1
+
+  InstallConfigSubnets:
+    Description: >-
+      Paste-ready platform.aws.vpc.subnets block for install-config.yaml. Assigns all five
+      required subnet roles explicitly, so the installer does not fall back to auto-discovery
+      and the VPC stays usable for non-cluster resources.
+    Value: !Sub
+    - |-
+      platform:
+        aws:
+          region: ${AWS::Region}
+          vpc:
+            subnets:
+            - id: ${PublicSubnet}
+              roles:
+              - type: IngressControllerLB
+              - type: ControlPlaneExternalLB
+              - type: BootstrapNode
+            - id: ${PrivateSubnet}
+              roles:
+              - type: ClusterNode
+              - type: ControlPlaneInternalLB
+    - PublicSubnet: !Ref PublicSubnet1
+      PrivateSubnet: !Ref PrivateSubnet1

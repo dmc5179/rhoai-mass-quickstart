@@ -1,0 +1,28 @@
+# Tooling fetched by scripts/00-init.sh (~1.2 GB).
+/bin/oc
+/bin/kubectl
+/bin/openshift-install-fips
+/bin/ocp-env.sh
+
+# Credentials. Never commit these.
+/secrets/*
+!/secrets/.gitkeep
+!/secrets/aws.env.example
+
+# Installer state: kubeconfig, kubeadmin password, and the metadata required to
+# destroy the cluster. Keep it locally, keep it out of git.
+/clusters/*
+!/clusters/.gitkeep
+
+# Rendered from templates/install-config.yaml.existingvpc; contains the pull
+# secret.
+/install-config.yaml
+
+# Upstream guide, cloned separately and tracked by its own git repo. Ignored
+# here so none of our work lands in it and so git does not record it as a
+# stray gitlink. Replace this with a proper submodule once the fork exists:
+#   git submodule add <your fork url> rhoai-maas-guide
+/rhoai-maas-guide/
+
+# Local scratch notes.
+/git-setup.txt
