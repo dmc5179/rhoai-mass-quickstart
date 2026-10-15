@@ -17,12 +17,3 @@
 # Rendered from templates/install-config.yaml.existingvpc; contains the pull
 # secret.
 /install-config.yaml
-
-# Upstream guide, cloned separately and tracked by its own git repo. Ignored
-# here so none of our work lands in it and so git does not record it as a
-# stray gitlink. Replace this with a proper submodule once the fork exists:
-#   git submodule add <your fork url> rhoai-maas-guide
-/rhoai-maas-guide/
-
-# Local scratch notes.
-/git-setup.txt

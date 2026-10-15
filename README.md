@@ -17,8 +17,30 @@ scripts/                    Numbered phases, run in order
 bin/                        oc, kubectl, openshift-install-fips  (gitignored)
 secrets/                    aws.env, pull-secret.json            (gitignored)
 clusters/<name>/            Installer state: kubeconfig, metadata (gitignored)
-rhoai-maas-guide/           Upstream MaaS guide (manifests + setup script)
+rhoai-maas-guide/           MaaS guide, as a submodule pinned to a known-good
+                            commit of our fork
 ```
+
+Clone with the submodule:
+
+```bash
+git clone --recurse-submodules git@github.com:dmc5179/rhoai-mass-quickstart.git
+# already cloned without it:
+git submodule update --init
+```
+
+The submodule tracks a fork of
+[rh-aiservices-bu/rhoai-maas-guide](https://github.com/rh-aiservices-bu/rhoai-maas-guide).
+To pull in upstream changes:
+
+```bash
+cd rhoai-maas-guide
+git fetch upstream && git merge upstream/main && git push origin main
+cd .. && git add rhoai-maas-guide && git commit -m "Bump guide"
+```
+
+Committing the submodule pointer is what records *which* version of the guide a
+given cluster build was validated against.
 
 ## Prerequisites
 
