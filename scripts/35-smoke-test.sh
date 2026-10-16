@@ -55,6 +55,10 @@ export KUBECONFIG
 "$OC" get crd maasmodelrefs.maas.opendatahub.io >/dev/null 2>&1 || {
     echo "Error: MaaS is not installed. Run scripts/20-deploy-maas.sh first." >&2; exit 1; }
 
+# The MaaS API wants a bearer token; the installer kubeconfig uses certs.
+. "${ROOT}/scripts/lib-oc-token.sh"
+ensure_oc_token || exit 1
+
 # --- endpoint ---------------------------------------------------------------
 CLUSTER_DOMAIN="$("$OC" get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
 MAAS_HOSTNAME="${MAAS_HOSTNAME:-maas.${CLUSTER_DOMAIN}}"
@@ -97,12 +101,15 @@ API_KEY_ID="$(jq -r '.id // empty' <<<"$KEY_RESPONSE")"
 echo "    key id ${API_KEY_ID}"
 
 cleanup() {
+    # Revoke BEFORE dropping the token kubeconfig: the revoke call needs
+    # `oc whoami -t`, and cleanup_oc_token deletes the file that provides it.
     if [ "$KEEP_KEY" -eq 0 ] && [ -n "${API_KEY_ID:-}" ]; then
         curl -sSk --max-time 15 -X DELETE \
             -H "Authorization: Bearer $("$OC" whoami -t)" \
             "${HOST}/maas-api/v1/api-keys/${API_KEY_ID}" >/dev/null 2>&1 || true
         echo "==> Revoked API key ${API_KEY_ID}"
     fi
+    cleanup_oc_token
 }
 trap cleanup EXIT
 

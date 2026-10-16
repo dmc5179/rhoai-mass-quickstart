@@ -63,6 +63,12 @@ if ! "$OC" get crd maasmodelrefs.maas.opendatahub.io >/dev/null 2>&1; then
     exit 1
 fi
 
+# verify.sh mints API keys with `oc whoami -t`, which a cert-based kubeconfig
+# cannot satisfy.
+. "${ROOT}/scripts/lib-oc-token.sh"
+ensure_oc_token || exit 1
+trap cleanup_oc_token EXIT
+
 # Same constraint as phase 20: verify.sh calls bare `oc` and checks `oc whoami`,
 # so it needs oc on PATH. Scoped to this process, which also guarantees it runs
 # against the pinned 4.22 client rather than whatever is installed on the host.
