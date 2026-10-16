@@ -21,3 +21,8 @@
 # Rendered from templates/; install-config.yaml contains the pull secret.
 /install-config.yaml
 /agent-config.yaml
+
+# Deploy logs. Debug-level installer output names cloud resources, hostnames,
+# and account identifiers, so keep it local.
+/logs/*
+!/logs/.gitkeep

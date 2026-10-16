@@ -8,7 +8,11 @@
 #   3. run the installer (bare metal: build an agent ISO and wait for it)
 #   4. add on-demand and spot GPU machine sets at replica 0 (AWS only)
 #
-# Usage: scripts/10-deploy-cluster.sh [--dry-run]
+# Usage: scripts/10-deploy-cluster.sh [--dry-run] [--log-level <level>]
+#
+# Everything printed is also written to logs/deploy-<platform>-<timestamp>.log,
+# so a failed run can be read back afterwards. The installer runs at debug
+# level by default; override with --log-level or the LOG_LEVEL variable.
 #
 # On AWS the VPC stack is deliberately not deleted by `openshift-install destroy
 # cluster`, so the cluster can be rebuilt without re-creating the network.
@@ -17,11 +21,30 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+LOG_LEVEL="${LOG_LEVEL:-debug}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)   DRY_RUN=1; shift ;;
+        --log-level) LOG_LEVEL="$2"; shift 2 ;;
+        -h|--help)   sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) echo "10-deploy-cluster.sh: unknown option '$1'" >&2; exit 2 ;;
+    esac
+done
 
 # cluster.env first: PLATFORM decides which credential file is needed.
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
+
+# Tee everything from here on into a timestamped log. Done before any real
+# work so that a failure anywhere below is captured, including output from the
+# installer and the other scripts this one calls.
+mkdir -p "${ROOT}/logs"
+LOG_FILE="${ROOT}/logs/deploy-${PLATFORM}-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "==> Logging to ${LOG_FILE}"
+echo "==> Installer log level: ${LOG_LEVEL}"
 
 case "$PLATFORM" in
     aws)       CREDS="${ROOT}/secrets/aws.env" ;;
@@ -108,7 +131,7 @@ if [ "$PLATFORM" = "baremetal" ]; then
     cp "${ROOT}/agent-config.yaml" "${CLUSTER_DIR}/agent-config.yaml"
 
     echo "==> Building agent ISO"
-    "$OPENSHIFT_INSTALL" agent create image --dir "$CLUSTER_DIR" --log-level=info
+    "$OPENSHIFT_INSTALL" agent create image --dir "$CLUSTER_DIR" --log-level="$LOG_LEVEL"
 
     cat <<EOF
 
@@ -121,11 +144,11 @@ Waiting for the install to complete. Interrupting here is safe - resume with:
     "\$OPENSHIFT_INSTALL" agent wait-for install-complete --dir ${CLUSTER_DIR}
 
 EOF
-    "$OPENSHIFT_INSTALL" agent wait-for bootstrap-complete --dir "$CLUSTER_DIR" --log-level=info
-    "$OPENSHIFT_INSTALL" agent wait-for install-complete --dir "$CLUSTER_DIR" --log-level=info
+    "$OPENSHIFT_INSTALL" agent wait-for bootstrap-complete --dir "$CLUSTER_DIR" --log-level="$LOG_LEVEL"
+    "$OPENSHIFT_INSTALL" agent wait-for install-complete --dir "$CLUSTER_DIR" --log-level="$LOG_LEVEL"
 else
     echo "==> Creating cluster (expect 30-45 minutes)"
-    "$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level=info
+    "$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level="$LOG_LEVEL"
 fi
 
 # --- 4. GPU machine sets ----------------------------------------------------
@@ -146,4 +169,6 @@ Cluster is up. To use it:
     "\$OC" get clusterversion
 
 The kubeadmin password is in ${CLUSTER_DIR}/auth/kubeadmin-password.
+
+Full log of this run: ${LOG_FILE}
 EOF
