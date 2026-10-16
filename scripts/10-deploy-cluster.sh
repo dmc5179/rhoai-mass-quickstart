@@ -5,6 +5,7 @@
 #   1. ensure the VPC CloudFormation stack exists
 #   2. render install-config.yaml from the stack outputs
 #   3. run the installer
+#   4. add on-demand and spot GPU machine sets, both at replica 0
 #
 # Usage: scripts/10-deploy-cluster.sh [--dry-run]
 #
@@ -55,6 +56,7 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "==> [dry-run] would render install-config.yaml via scripts/generate-install-config.sh"
     echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
+    echo "==> [dry-run] would add GPU machine sets (${GPU_INSTANCE_TYPE}, on-demand + spot, replicas=0)"
     exit 0
 fi
 
@@ -68,6 +70,10 @@ cp "${ROOT}/install-config.yaml" "${CLUSTER_DIR}/install-config.yaml"
 
 echo "==> Creating cluster (expect 30-45 minutes)"
 "$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level=info
+
+# --- 4. GPU machine sets ----------------------------------------------------
+# Created at replica 0, so they cost nothing until scaled up.
+"${ROOT}/scripts/add-gpu-machinesets.sh"
 
 cat <<EOF
 

@@ -76,6 +76,34 @@ scripts/20-deploy-maas.sh --from-phase 4         # resume after a failure
 
 With no arguments the guide auto-detects GPU capacity and picks a model.
 
+## GPU nodes
+
+Phase 10 creates two GPU machine sets, both at **0 replicas**, so they cost
+nothing until you ask for one:
+
+| Machine set | Purpose |
+|---|---|
+| `<infra>-gpu-<az>` | On-demand. Predictable, no interruptions. |
+| `<infra>-gpu-spot-<az>` | Spot. Much cheaper, but AWS can reclaim the node with a two-minute warning. |
+
+```bash
+source bin/ocp-env.sh
+export KUBECONFIG=clusters/rhoai/auth/kubeconfig
+
+"$OC" get machineset -n openshift-machine-api
+"$OC" scale machineset/<name> -n openshift-machine-api --replicas=1
+```
+
+Both are cloned from the cluster's own worker machine set, so they inherit the
+correct RHCOS AMI, subnet, security groups, and IAM profile. Nodes are labelled
+`node-role.kubernetes.io/gpu` and tainted `nvidia.com/gpu:NoSchedule`, which
+keeps ordinary workloads off them; the guide's GPU models already carry the
+matching toleration.
+
+Set the instance type with `GPU_INSTANCE_TYPE` in `cluster.env`. Scale back to
+0 when you are done — a running GPU node is the most expensive thing in this
+stack.
+
 Then use the cluster:
 
 ```bash
