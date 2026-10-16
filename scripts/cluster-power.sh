@@ -90,8 +90,61 @@ echo
 masters() { jq -r --arg s "$1" '.[] | select(.state==$s) | select(.name|test("-master")) | .id' <<<"$STATES"; }
 workers() { jq -r --arg s "$1" '.[] | select(.state==$s) | select(.name|test("-master")|not) | .id' <<<"$STATES"; }
 
+# Stopping instances stops the EC2 compute charge and nothing else. Everything
+# below keeps billing while the cluster is parked, which is the single most
+# common surprise - so report it rather than leave it to be discovered later.
+cost_summary() {
+    local vols vol_gib eips nats lbs running stopped
+
+    vols="$(aws ec2 describe-volumes \
+        --filters "Name=tag:${TAG_KEY},Values=owned" \
+        --query 'Volumes[].Size' --output json 2>/dev/null || echo '[]')"
+    vol_gib="$(jq 'add // 0' <<<"$vols")"
+    vols="$(jq 'length' <<<"$vols")"
+
+    # Elastic IPs and NAT gateways mostly belong to the VPC stack rather than
+    # the cluster, so query the VPC rather than filtering on the cluster tag.
+    local vpc_id
+    vpc_id="$(aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" \
+        --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" \
+        --output text 2>/dev/null || true)"
+
+    if [ -n "$vpc_id" ] && [ "$vpc_id" != "None" ]; then
+        nats="$(aws ec2 describe-nat-gateways \
+            --filter "Name=vpc-id,Values=${vpc_id}" "Name=state,Values=available" \
+            --query 'length(NatGateways)' --output text 2>/dev/null || echo 0)"
+        lbs="$(aws elbv2 describe-load-balancers \
+            --query "length(LoadBalancers[?VpcId=='${vpc_id}'])" --output text 2>/dev/null || echo 0)"
+    else
+        nats=0; lbs=0
+    fi
+    eips="$(aws ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null || echo 0)"
+
+    running="$(jq -r '[.[] | select(.state=="running")] | length' <<<"$STATES")"
+    stopped="$(jq -r '[.[] | select(.state=="stopped")] | length' <<<"$STATES")"
+
+    cat <<EOF
+
+--- what is costing money -------------------------------------------------
+  EC2 instances     ${running} running, ${stopped} stopped
+                    stopped instances cost nothing for compute
+  EBS volumes       ${vols} totalling ${vol_gib} GiB
+                    billed in full whether or not the instance is running
+  NAT gateways      ${nats} in the VPC
+                    hourly charge continues even with every node stopped
+  Elastic IPs       ${eips} allocated
+  Load balancers    ${lbs} in the VPC
+---------------------------------------------------------------------------
+Parking saves the compute charge only. To stop paying for the NAT gateway,
+EBS, and load balancers you have to destroy the cluster:
+    scripts/90-destroy-cluster.sh            # keeps the VPC and its NAT
+    scripts/90-destroy-cluster.sh --with-vpc # removes the NAT too
+EOF
+}
+
 case "$ACTION" in
     status)
+        cost_summary
         exit 0
         ;;
 
@@ -107,10 +160,11 @@ case "$ACTION" in
             aws ec2 wait instance-stopped --instance-ids "$@"
             echo "    Done."
         fi
+        STATES="$(aws ec2 describe-instances --instance-ids "$@" \
+            --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,name:Tags[?Key==`Name`]|[0].Value,type:InstanceType}' \
+            --output json 2>/dev/null || echo "$STATES")"
+        cost_summary
         cat <<EOF
-
-Cluster parked. EC2 compute is no longer billed; EBS volumes, Elastic IPs, and
-the NAT gateway still are.
 
 Bring it back with:
     scripts/cluster-power.sh start --wait

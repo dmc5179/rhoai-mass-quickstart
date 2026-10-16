@@ -46,6 +46,18 @@ echo "==> Using oc:      $(command -v oc)"
 echo "==> Using cluster: $("$OC" whoami --show-server)"
 echo "==> Guide pinned at: $(git -C "$GUIDE" rev-parse --short HEAD)"
 
+# Pin the model from cluster.env unless the caller named one explicitly.
+# Without this the guide auto-detects, and a missing GPU node silently
+# downgrades to the CPU simulator while still reporting success.
+ARGS=("$@")
+case " $* " in
+    *" --model "*) ;;
+    *) if [ -n "${MAAS_MODEL:-}" ]; then
+           echo "==> Model: ${MAAS_MODEL} (from MAAS_MODEL in cluster.env)"
+           ARGS=(--model "$MAAS_MODEL" "$@")
+       fi ;;
+esac
+
 # The guide's paths are relative to its own repo root.
 cd "$GUIDE"
-exec ./scripts/setup-maas.sh "$@"
+exec ./scripts/setup-maas.sh ${ARGS[@]+"${ARGS[@]}"}
