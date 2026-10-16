@@ -33,9 +33,17 @@ MAPI="openshift-machine-api"
 # Clone an existing worker machine set rather than writing one from scratch:
 # that inherits the RHCOS AMI, subnet, security groups, IAM instance profile,
 # and cluster tags, all of which are cluster-specific and easy to get wrong.
-BASE="$("$OC" get machineset -n "$MAPI" \
-    -l machine.openshift.io/cluster-api-machine-role=worker \
-    -o jsonpath='{.items[0].metadata.name}')"
+# The machine-role label lives in .spec.template.metadata.labels - the labels
+# stamped onto the Machines - not in the MachineSet's own .metadata.labels,
+# which only carries cluster-api-cluster. `oc get -l` filters on the latter, so
+# selecting with -l here silently matches nothing. Read the template labels
+# instead, and skip any GPU set we created earlier so a re-run does not clone
+# a GPU machine set as its own base.
+BASE="$("$OC" get machineset -n "$MAPI" -o json | jq -r '
+    .items[]
+    | select(.spec.template.metadata.labels["machine.openshift.io/cluster-api-machine-role"] == "worker")
+    | select(.metadata.name | test("-gpu(-spot)?-") | not)
+    | .metadata.name' | head -1)"
 [ -n "$BASE" ] || { echo "Error: no worker machine set found to use as a base." >&2; exit 1; }
 
 INFRA="$("$OC" get infrastructure cluster -o jsonpath='{.status.infrastructureName}')"
