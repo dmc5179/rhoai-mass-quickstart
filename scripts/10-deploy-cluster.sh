@@ -23,6 +23,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
 LOG_LEVEL="${LOG_LEVEL:-debug}"
 
+# Kept intact for the logging re-exec below, which has to hand the child the
+# same arguments this invocation got - the parse loop consumes "$@".
+ORIG_ARGS=("$@")
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)   DRY_RUN=1; shift ;;
@@ -36,12 +40,23 @@ done
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
 
-# Tee everything from here on into a timestamped log. Done before any real
-# work so that a failure anywhere below is captured, including output from the
-# installer and the other scripts this one calls.
-mkdir -p "${ROOT}/logs"
-LOG_FILE="${ROOT}/logs/deploy-${PLATFORM}-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+# Tee everything into a timestamped log, before any real work, so a failure
+# anywhere below is captured - including output from the installer and from
+# the other scripts this one calls.
+#
+# Done by re-running this script as a child of a pipeline rather than with
+# `exec > >(tee ...)`. With process substitution the script can exit before
+# tee has flushed, which silently truncates the log and the terminal output -
+# exactly when something has gone wrong and the last lines matter most.
+# PIPESTATUS carries the real exit status back out.
+if [ -z "${_LOG_WRAPPED:-}" ]; then
+    mkdir -p "${ROOT}/logs"
+    LOG_FILE="${ROOT}/logs/deploy-${PLATFORM}-$(date +%Y%m%d-%H%M%S).log"
+    export LOG_FILE _LOG_WRAPPED=1
+    set -o pipefail
+    "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"} 2>&1 | tee -a "$LOG_FILE"
+    exit "${PIPESTATUS[0]}"
+fi
 
 echo "==> Logging to ${LOG_FILE}"
 echo "==> Installer log level: ${LOG_LEVEL}"
@@ -60,6 +75,35 @@ if [ -n "$CREDS" ]; then
 fi
 
 echo "==> Platform: ${PLATFORM}"
+
+# On the cloud platforms the installer starts a local Cluster API control
+# plane - kube-apiserver, etcd, and a pile of controllers - on this machine
+# before it touches the cloud. Those controllers open a lot of inotify
+# instances, and the per-user limit is shared with everything else in your
+# desktop session. When it runs out, the installer dies ~40 seconds in with
+# "Problem running manager err=too many open files", which does not obviously
+# point at a local resource limit.
+if [ "$PLATFORM" != "baremetal" ]; then
+    inotify_limit="$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)"
+    # find exits non-zero when it hits /proc entries owned by other users, and
+    # pipefail would turn that into a fatal error, so swallow it explicitly.
+    inotify_used="$( { find /proc/[0-9]*/fd -lname 'anon_inode:inotify' 2>/dev/null || true; } | wc -l)"
+    inotify_free=$(( inotify_limit - inotify_used ))
+    echo "==> inotify instances: ${inotify_used}/${inotify_limit} used, ${inotify_free} free"
+    if [ "$inotify_free" -lt 256 ]; then
+        echo >&2
+        echo "Error: not enough free inotify instances for the local Cluster API" >&2
+        echo "       control plane (${inotify_free} free, want at least 256)." >&2
+        echo >&2
+        echo "       Raise the limit now:" >&2
+        echo "           sudo sysctl -w fs.inotify.max_user_instances=8192" >&2
+        echo >&2
+        echo "       And make it stick across reboots:" >&2
+        echo "           echo 'fs.inotify.max_user_instances=8192' |" >&2
+        echo "               sudo tee /etc/sysctl.d/99-openshift-installer.conf" >&2
+        exit 1
+    fi
+fi
 
 # --- 1. network -------------------------------------------------------------
 # Only AWS builds its network separately. On IBM Cloud the installer either
