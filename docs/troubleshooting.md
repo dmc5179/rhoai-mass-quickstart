@@ -97,6 +97,40 @@ instance:
     --filters Name=instance-type,Values=g6.xlarge Name=location,Values=us-east-2a
   ```
 
+## Spot GPU request denied by a service control policy
+
+```
+Spot request failed: error launching instance: You are not authorized to
+perform: ec2:RunInstances ... with an explicit deny in a service control
+policy
+```
+
+An organisation-level SCP, not a capacity shortage, and not something you can
+retry around. Seen on Red Hat Demo Platform sandboxes, which permit on-demand
+GPU instances but deny spot.
+
+`scripts/15-gpu-node.sh up --spot --fallback` handles it: it detects the
+denial, scales the spot set back to 0, and switches to on-demand. Once you
+know spot is blocked in an account, drop `--spot` and save the five-minute
+detection wait.
+
+Confirm on-demand is permitted by checking the machine has no error:
+
+```bash
+"$OC" get machines -n openshift-machine-api -o json | jq -r '
+  .items[] | select(.metadata.name|test("-gpu-")) |
+  "\(.metadata.name) \(.status.phase) \(.status.errorMessage // "no error")"'
+```
+
+## "no matches for kind NodeFeatureDiscovery ... ensure CRDs are installed first"
+
+A CSV reporting `Succeeded` does not mean its CRDs are registered yet.
+`15-gpu-node.sh` now waits for `nodefeaturediscoveries.nfd.openshift.io` and
+`clusterpolicies.nvidia.com` to be established before applying the instances.
+
+If you hit it on an older copy, just re-run the script — the operators are
+already installed, so it picks up where it left off.
+
 ## "could not find any suitable subnets for creating the ELB"
 
 A `LoadBalancer` Service — usually the MaaS gateway — cannot find a subnet.

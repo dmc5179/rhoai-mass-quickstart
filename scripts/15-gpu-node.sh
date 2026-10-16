@@ -154,7 +154,7 @@ up)
             --instance-types "$GPU_INSTANCE_TYPE" \
             --product-descriptions "Linux/UNIX" \
             --availability-zone "$AZ" --max-items 1 \
-            --query 'SpotPriceHistory[0].SpotPrice' --output text 2>/dev/null || true)"
+            --query 'SpotPriceHistory[0].SpotPrice' --output text 2>/dev/null | head -1 || true)"
         [ -n "$SPOT_PRICE" ] && [ "$SPOT_PRICE" != "None" ] &&
             echo "==> Spot price for ${GPU_INSTANCE_TYPE} in ${AZ}: \$${SPOT_PRICE}/hr"
         echo "    Spot nodes can be reclaimed with two minutes' notice. The"
@@ -184,7 +184,14 @@ up)
                     | select(.metadata.name | startswith($ms))
                     | .status.errorMessage // .status.failureMessage // empty' | head -1)"
             if [ -n "$failure" ]; then
-                echo "    Spot request failed: ${failure}" >&2
+                # Trim the base64 "Encoded authorization failure message",
+                # which is several hundred useless characters.
+                short="${failure%%Encoded authorization failure*}"
+                echo "    Spot request failed: ${short}" >&2
+                if grep -q 'service control policy' <<<"$failure"; then
+                    echo "    This is an organisation policy denying spot instances," >&2
+                    echo "    not a capacity shortage. Retrying spot will not help." >&2
+                fi
                 break
             fi
             sleep 15
@@ -228,8 +235,25 @@ up)
     done
 
     # --- instances ---------------------------------------------------------
-    # Separate from the subscriptions because these CRs do not exist until the
-    # operators have installed their CRDs.
+    # A CSV reporting Succeeded does NOT mean its CRDs are registered and
+    # established yet - applying straight after it fails with "no matches for
+    # kind NodeFeatureDiscovery ... ensure CRDs are installed first". Wait for
+    # the CRDs themselves.
+    echo "==> Waiting for the operator CRDs to be established (up to 5m)"
+    for crd in nodefeaturediscoveries.nfd.openshift.io clusterpolicies.nvidia.com; do
+        deadline=$(( $(date +%s) + 300 ))
+        until "$OC" get crd "$crd" >/dev/null 2>&1; do
+            [ "$(date +%s)" -lt "$deadline" ] || {
+                echo "Error: CRD ${crd} never appeared." >&2
+                echo "       Check: \"\$OC\" get csv -A | grep -Ei 'nfd|gpu'" >&2
+                exit 1
+            }
+            sleep 5
+        done
+        "$OC" wait --for=condition=established "crd/${crd}" --timeout=120s >/dev/null
+        echo "    ${crd}"
+    done
+
     echo "==> Creating NodeFeatureDiscovery and ClusterPolicy"
     "$OC" apply -k "${GUIDE}/manifests/01-prerequisites/gpu/instances/"
 
