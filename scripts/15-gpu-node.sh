@@ -3,7 +3,7 @@
 # 15-gpu-node.sh - bring a GPU node online (or take it away again) so that
 #                  phase 20 deploys a real GPU model instead of the simulator.
 #
-# Usage: scripts/15-gpu-node.sh up [--spot] [--replicas N]
+# Usage: scripts/15-gpu-node.sh up [--spot] [--fallback] [--replicas N]
 #        scripts/15-gpu-node.sh down
 #        scripts/15-gpu-node.sh status
 #
@@ -30,17 +30,23 @@ ACTION="${1:-}"; shift || true
 USE_SPOT=0
 REPLICAS=1
 
+FALLBACK=0
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --spot)     USE_SPOT=1; shift ;;
+        --fallback) FALLBACK=1; shift ;;
         --replicas) REPLICAS="$2"; shift 2 ;;
         *) echo "15-gpu-node.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
 
+[ "$FALLBACK" -eq 0 ] || [ "$USE_SPOT" -eq 1 ] || {
+    echo "15-gpu-node.sh: --fallback only makes sense with --spot" >&2; exit 2; }
+
 case "$ACTION" in
     up|down|status) ;;
-    *) echo "Usage: scripts/15-gpu-node.sh {up|down|status} [--spot] [--replicas N]" >&2; exit 2 ;;
+    *) echo "Usage: scripts/15-gpu-node.sh {up|down|status} [--spot] [--fallback] [--replicas N]" >&2; exit 2 ;;
 esac
 
 . "${ROOT}/cluster.env"
@@ -131,8 +137,65 @@ down)
 
 up)
     echo "==> Cluster ${INFRA}, zone ${AZ}"
+
+    # Spot is roughly half price but can simply be unavailable. Show what it
+    # costs now, so an unfulfilled request later is interpretable rather than
+    # mysterious.
+    if [ "$USE_SPOT" -eq 1 ] && command -v aws >/dev/null; then
+        SPOT_PRICE="$(aws ec2 describe-spot-price-history \
+            --instance-types "$GPU_INSTANCE_TYPE" \
+            --product-descriptions "Linux/UNIX" \
+            --availability-zone "$AZ" --max-items 1 \
+            --query 'SpotPriceHistory[0].SpotPrice' --output text 2>/dev/null || true)"
+        [ -n "$SPOT_PRICE" ] && [ "$SPOT_PRICE" != "None" ] &&
+            echo "==> Spot price for ${GPU_INSTANCE_TYPE} in ${AZ}: \$${SPOT_PRICE}/hr"
+        echo "    Spot nodes can be reclaimed with two minutes' notice. The"
+        echo "    machine set replaces them, but a model pod mid-request dies."
+    fi
+
     echo "==> Scaling ${MS} to ${REPLICAS} (${GPU_INSTANCE_TYPE})"
     "$OC" scale machineset "$MS" -n "$MAPI" --replicas="$REPLICAS"
+
+    # A spot request that cannot be filled leaves the Machine sitting in
+    # Provisioning indefinitely, so waiting the full 25 minutes for a node
+    # label tells you nothing useful. Watch the Machine itself for a few
+    # minutes and surface the reason.
+    if [ "$USE_SPOT" -eq 1 ]; then
+        echo "==> Checking the spot request is being fulfilled (up to 5m)"
+        spot_ok=0
+        deadline=$(( $(date +%s) + 300 ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            phases="$("$OC" get machines -n "$MAPI" \
+                -o jsonpath="{range .items[?(@.spec.providerID)]}{.metadata.name}{'\t'}{.status.phase}{'\n'}{end}" \
+                2>/dev/null | grep -F "${MS}" || true)"
+            if grep -qE 'Provisioned|Running' <<<"$phases"; then
+                spot_ok=1; break
+            fi
+            failure="$("$OC" get machines -n "$MAPI" -o json 2>/dev/null |
+                jq -r --arg ms "$MS" '.items[]
+                    | select(.metadata.name | startswith($ms))
+                    | .status.errorMessage // .status.failureMessage // empty' | head -1)"
+            if [ -n "$failure" ]; then
+                echo "    Spot request failed: ${failure}" >&2
+                break
+            fi
+            sleep 15
+        done
+
+        if [ "$spot_ok" -eq 0 ]; then
+            if [ "$FALLBACK" -eq 1 ]; then
+                echo "==> Spot did not fulfil; falling back to on-demand"
+                "$OC" scale machineset "$MS" -n "$MAPI" --replicas=0
+                MS="${INFRA}-gpu-${AZ}"
+                USE_SPOT=0
+                echo "==> Scaling ${MS} to ${REPLICAS}"
+                "$OC" scale machineset "$MS" -n "$MAPI" --replicas="$REPLICAS"
+            else
+                echo "    Still unfulfilled. Continuing to wait - re-run with"
+                echo "    --fallback to switch to on-demand automatically."
+            fi
+        fi
+    fi
 
     # --- operators ---------------------------------------------------------
     # Applied from the guide submodule so the versions stay pinned with it.

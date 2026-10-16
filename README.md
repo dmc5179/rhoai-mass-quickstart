@@ -1,190 +1,103 @@
-# RHOAI MaaS on AWS
+# RHOAI MaaS Quickstart
 
-Push-button deployment of OpenShift 4.22 on AWS with Red Hat OpenShift AI
-Models-as-a-Service.
+Deploy OpenShift 4.22, then Red Hat OpenShift AI with Models-as-a-Service, and
+serve a real LLM behind an authenticated, rate-limited API.
 
-The VPC is built separately from the cluster, so `openshift-install destroy
-cluster` tears down the cluster and leaves the network in place for the next
-build.
+Everything is plain shell scripts. There is no operator to install, no
+controller to run, and no AI assistant required.
 
-## Layout
-
-```
-cluster.env                 Non-secret settings: platform, region, sizes
-cloudformation/01_vpc.yaml  Standalone single-AZ VPC (AWS only)
-templates/                  One install-config template per platform
-scripts/                    Numbered phases, run in order
-bin/                        oc, kubectl, openshift-install-fips  (gitignored)
-secrets/                    aws.env, pull-secret.json            (gitignored)
-clusters/<name>/            Installer state: kubeconfig, metadata (gitignored)
-rhoai-maas-guide/           MaaS guide, as a submodule pinned to a known-good
-                            commit of our fork
+```bash
+scripts/00-init.sh             # fetch oc and openshift-install
+scripts/10-deploy-cluster.sh   # network + OpenShift        ~40 min
+scripts/15-gpu-node.sh up      # optional GPU node          ~25 min
+scripts/20-deploy-maas.sh      # RHOAI + MaaS + a model     ~30 min
+scripts/35-smoke-test.sh       # ask the model a question   ~1 min
 ```
 
-Clone with the submodule:
+---
+
+## Start here
+
+**1. Pick your platform.** Set `PLATFORM` in `cluster.env`.
+
+| Platform | Status | Read this |
+|---|---|---|
+| `aws` | Working end to end | [docs/aws.md](docs/aws.md) |
+| `ibmcloud` | Config generation ready, not yet run | [docs/ibm-cloud.md](docs/ibm-cloud.md) |
+| `baremetal` | Config generation ready, not yet run | [docs/bare-metal.md](docs/bare-metal.md) |
+
+**2. Check you have what you need.** [docs/prerequisites.md](docs/prerequisites.md)
+— accounts, a pull secret, DNS, local tooling, and one workstation kernel
+setting that will otherwise fail the install 40 seconds in.
+
+**3. Follow your platform's walkthrough.** Each one is a linear
+start-to-finish page.
+
+**4. Then:**
+
+- [docs/gpu-and-models.md](docs/gpu-and-models.md) — choosing a model, GPU
+  nodes, and OCI modelcars
+- [docs/verifying.md](docs/verifying.md) — proving it works
+- [docs/operations.md](docs/operations.md) — parking, costs, teardown
+- [docs/troubleshooting.md](docs/troubleshooting.md) — things that have
+  actually gone wrong here
+- [docs/reference.md](docs/reference.md) — every script and every setting
+
+---
+
+## What you end up with
+
+An OpenShift cluster running RHOAI, with a model served through a Kuadrant
+gateway that enforces API keys, per-subscription rate limits, and usage
+tracking. Clients talk to it with the OpenAI API:
+
+```bash
+curl https://maas.apps.<your-cluster>/v1/chat/completions \
+  -H "Authorization: Bearer <api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+## How it is put together
+
+```
+cluster.env            Every setting you are likely to change. Start here.
+secrets/               Credentials. Gitignored.
+cloudformation/        Standalone AWS VPC
+templates/             One install-config template per platform
+scripts/               Numbered phases, run in order
+bin/                   oc, kubectl, openshift-install-fips (fetched)
+clusters/<name>/       Installer state: kubeconfig, metadata. Keep it.
+logs/                  Timestamped run logs
+rhoai-maas-guide/      Upstream guide, pinned as a submodule
+docs/                  You are here
+```
+
+Two design choices worth knowing up front, because they shape everything else:
+
+**The network outlives the cluster.** On AWS the VPC is a separate
+CloudFormation stack carrying no `kubernetes.io/cluster/*: owned` tags, so
+`destroy cluster` leaves it standing and the next build reuses it. Rebuilding
+costs ~40 minutes instead of ~45, and the VPC's identity stays stable.
+
+**The model installation is not ours.** `rhoai-maas-guide` is a pinned
+submodule of [the upstream
+guide](https://github.com/rh-aiservices-bu/rhoai-maas-guide), which Red Hat's
+own [MaaS
+documentation](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai_self-managed/3.5/html-single/govern_llm_access_with_models-as-a-service/index)
+references as its companion. Phases 20 and 30 are thin wrappers around it. We
+pin a commit so a given cluster build is reproducible.
+
+## Getting the repo
 
 ```bash
 git clone --recurse-submodules git@github.com:dmc5179/rhoai-mass-quickstart.git
-# already cloned without it:
+# or, if you already cloned it flat:
 git submodule update --init
 ```
 
-The submodule tracks a fork of
-[rh-aiservices-bu/rhoai-maas-guide](https://github.com/rh-aiservices-bu/rhoai-maas-guide).
-To pull in upstream changes:
+## This is not a supported product
 
-```bash
-cd rhoai-maas-guide
-git fetch upstream && git merge upstream/main && git push origin main
-cd .. && git add rhoai-maas-guide && git commit -m "Bump guide"
-```
-
-Committing the submodule pointer is what records *which* version of the guide a
-given cluster build was validated against.
-
-## Platforms
-
-Set `PLATFORM` in `cluster.env`. Each platform has its own template under
-`templates/`, and `generate-install-config.sh` dispatches on it.
-
-| `PLATFORM` | State | Notes |
-|---|---|---|
-| `aws` | Working | VPC built separately by CloudFormation and outlives the cluster. GPU machine sets created automatically. |
-| `ibmcloud` | Config generation ready, not yet run | `baseDomain` must be a CIS domain zone in the same account. Set `IBM_VPC_NAME` plus both subnet lists to reuse a VPC, or leave blank to let the installer create one. |
-| `baremetal` | Config generation ready, not yet run | Agent-based installer: phase 10 builds a bootable ISO and you start the machines yourself. No BMC access needed. |
-
-Platform differences worth knowing:
-
-- **The separate-network design is AWS-only.** On IBM Cloud, leaving
-  `IBM_VPC_NAME` blank means the installer owns the VPC and destroys it with
-  the cluster. Point it at an existing VPC to get the AWS-like separation.
-- **GPU machine sets are AWS-only.** `add-gpu-machinesets.sh` patches
-  AWS-specific `providerSpec` fields (`instanceType`, `spotMarketOptions`);
-  IBM Cloud uses different field names and has no direct spot equivalent.
-- **Bare metal builds an ISO instead of calling a cloud API.** Phase 10 runs
-  `openshift-install agent create image`, prints the ISO path, and then blocks
-  on `agent wait-for` while you boot the machines. Interrupting that wait is
-  safe; the command to resume it is printed. Set `BM_RENDEZVOUS_IP` to a
-  control plane node with a stable address — the other nodes find it by IP.
-  Setting `BM_CONTROL_PLANE_REPLICAS=1` and `BM_COMPUTE_REPLICAS=0` switches
-  to single-node OpenShift, which uses `platform: none` and no VIPs.
-- **MaaS itself already handles all of them.** The guide auto-detects the
-  cluster platform and installs MetalLB plus a passthrough Route on non-cloud
-  clusters, so phase 20 needs no changes for bare metal.
-
-## Prerequisites
-
-- An AWS account with admin credentials.
-- **A registered domain with a public Route 53 hosted zone in that account.**
-  The installer creates cluster DNS inside it. Without one, phase 10 stops
-  before touching anything.
-- A pull secret from <https://console.redhat.com/openshift/install/pull-secret>,
-  saved to `secrets/pull-secret.json`.
-- An SSH public key (`~/.ssh/id_rsa.pub` by default).
-- `aws`, `python-yq`, `jq`, and `curl` on PATH.
-
-## Usage
-
-```bash
-cp secrets/aws.env.example secrets/aws.env   # then fill in your keys
-$EDITOR cluster.env                          # PLATFORM, region, cluster name
-
-scripts/00-init.sh                           # fetch oc + openshift-install
-scripts/10-deploy-cluster.sh --dry-run       # check wiring
-scripts/10-deploy-cluster.sh                 # VPC + cluster, 30-45 min
-scripts/15-gpu-node.sh up                    # optional: GPU node, ~25 min
-scripts/20-deploy-maas.sh                    # RHOAI + MaaS, 20-40 min
-scripts/30-verify-maas.sh                    # end-to-end checks, ~5 min
-scripts/90-destroy-cluster.sh                # tear it all down again
-```
-
-`20-deploy-maas.sh` passes its arguments straight through to the guide's
-`setup-maas.sh`, so anything that script accepts works here:
-
-```bash
-scripts/20-deploy-maas.sh --model simulator      # CPU-only, no GPU needed
-scripts/20-deploy-maas.sh --with-observability
-scripts/20-deploy-maas.sh --from-phase 4         # resume after a failure
-```
-
-With no arguments the guide auto-detects GPU capacity and picks a model.
-
-## GPU nodes
-
-Phase 10 creates two GPU machine sets, both at **0 replicas**, so they cost
-nothing until you ask for one:
-
-| Machine set | Purpose |
-|---|---|
-| `<infra>-gpu-<az>` | On-demand. Predictable, no interruptions. |
-| `<infra>-gpu-spot-<az>` | Spot. Much cheaper, but AWS can reclaim the node with a two-minute warning. |
-
-```bash
-source bin/ocp-env.sh
-export KUBECONFIG=clusters/rhoai/auth/kubeconfig
-
-"$OC" get machineset -n openshift-machine-api
-"$OC" scale machineset/<name> -n openshift-machine-api --replicas=1
-```
-
-Both are cloned from the cluster's own worker machine set, so they inherit the
-correct RHCOS AMI, subnet, security groups, and IAM profile. Nodes are labelled
-`node-role.kubernetes.io/gpu` and tainted `nvidia.com/gpu:NoSchedule`, which
-keeps ordinary workloads off them; the guide's GPU models already carry the
-matching toleration.
-
-Set the instance type with `GPU_INSTANCE_TYPE` in `cluster.env`. Scale back to
-0 when you are done — a running GPU node is the most expensive thing in this
-stack.
-
-Then use the cluster:
-
-```bash
-source bin/ocp-env.sh
-export KUBECONFIG=clusters/rhoai/auth/kubeconfig
-"$OC" get clusterversion
-```
-
-PATH is deliberately not modified. `bin/ocp-env.sh` exports `$OC`, `$KUBECTL`,
-and `$OPENSHIFT_INSTALL` as explicit paths, so these binaries never collide with
-anything else installed on the host.
-
-## Parking and teardown
-
-Stop the nodes to pause billing without losing the cluster. Nodes are found
-through the AWS tagging API by the cluster's own infrastructure ID, so this
-picks up whatever exists, including a scaled-up GPU node:
-
-```bash
-scripts/cluster-power.sh status
-scripts/cluster-power.sh stop --wait
-scripts/cluster-power.sh start --wait
-```
-
-EBS volumes, Elastic IPs, and the NAT gateway are still billed while parked.
-After a restart, nodes usually come back `NotReady` with pending CSRs — the
-script prints the approval command.
-
-To destroy properly, including after a failed or partial install:
-
-```bash
-scripts/90-destroy-cluster.sh              # keeps the VPC stack
-scripts/90-destroy-cluster.sh --with-vpc   # removes the VPC too
-```
-
-This works from `metadata.json`, which the installer writes early, so it also
-cleans up a run that died partway. The cluster state directory is archived
-rather than deleted — `--purge` deletes it instead.
-
-## Notes
-
-- **GPU quota.** New AWS accounts have a quota of 0 for "Running On-Demand G and
-  VT instances". Request an increase before adding a GPU machine set; approval
-  can take days. The MaaS guide ships CPU-only models (`simulator`,
-  `qwen3-06b`), so the platform can be validated while that is pending.
-- **Single AZ.** `cloudformation/01_vpc.yaml` builds one AZ to keep NAT gateway
-  costs down, which means no AZ redundancy for the control plane. Set `VPC_AZ`
-  in `cluster.env` to pin the zone when GPU capacity matters.
-- **Installer binary.** The RHEL 9 installer archive ships as
-  `openshift-install-fips`; it is kept under that name. It is the ordinary
-  installer when the host is not in FIPS mode.
+It is an opinionated wrapper around Red Hat's documented install paths,
+assembled for demo and lab use. For anything that matters, follow the official
+documentation linked throughout these pages.
