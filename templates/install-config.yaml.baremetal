@@ -1,0 +1,80 @@
+# Template install-config for a connected OCP 4.22 cluster on bare metal.
+#
+# INCOMPLETE - see "hosts" below. This template covers installer-provisioned
+# bare metal (platform.baremetal), where the installer drives each machine over
+# its BMC. That is one of three bare-metal approaches, and the right one
+# depends on your environment:
+#
+#   platform.baremetal (this file)
+#       The installer powers machines on and off over Redfish/IPMI and
+#       provisions them. Requires BMC address and credentials plus the boot MAC
+#       for every host. `hosts` is a required field - the installer rejects the
+#       config without it.
+#
+#   Agent-based installer
+#       You generate a bootable ISO and start the machines yourself. Uses
+#       agent-config.yaml alongside install-config.yaml, and
+#       `openshift-install agent create image` rather than `create cluster`.
+#       No BMC access needed. Usually the easier path for lab hardware.
+#
+#   platform.none (UPI)
+#       You provision machines, load balancers, and DNS entirely yourself.
+#       Most work, most control.
+#
+# generate-install-config.sh fills in baseDomain, metadata.name, the VIPs, and
+# machineNetwork from cluster.env. The hosts list has to be written by hand
+# because BMC addresses, credentials, and MAC addresses are per-machine facts
+# that cannot be templated.
+apiVersion: v1
+baseDomain: CHANGEME
+compute:
+- architecture: amd64
+  hyperthreading: Enabled
+  name: worker
+  replicas: 2
+controlPlane:
+  architecture: amd64
+  hyperthreading: Enabled
+  name: master
+  replicas: 3
+metadata:
+  name: CHANGEME
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  # Must match the subnet the nodes sit on.
+  machineNetwork:
+  - cidr: CHANGEME
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  baremetal:
+    apiVIPs:
+    - CHANGEME
+    ingressVIPs:
+    - CHANGEME
+    # provisioningNetwork: "Disabled" drops the dedicated provisioning network
+    # and drives everything over the baremetal network. Simplest for a lab; set
+    # to "Managed" and add the provisioning* fields if you have a separate
+    # provisioning VLAN.
+    provisioningNetwork: "Disabled"
+    # REQUIRED. One entry per machine. Example shape:
+    #
+    # hosts:
+    # - name: master-0
+    #   role: master
+    #   bmc:
+    #     address: redfish-virtualmedia://192.168.1.10/redfish/v1/Systems/1
+    #     username: admin
+    #     password: <password>
+    #     disableCertificateVerification: true
+    #   bootMACAddress: aa:bb:cc:dd:ee:01
+    #   rootDeviceHints:
+    #     deviceName: /dev/sda
+    hosts: []
+publish: External
+fips: false
+pullSecret: ''
+sshKey: ''

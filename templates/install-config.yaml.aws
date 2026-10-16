@@ -1,4 +1,5 @@
-# Template install-config for a connected OCP 4.22 cluster in a pre-existing VPC.
+# Template install-config for a connected OCP 4.22 cluster on AWS, in the
+# pre-existing VPC built by cloudformation/01_vpc.yaml.
 #
 # Placeholder values marked CHANGEME are filled in by generate-install-config.sh from the
 # CloudFormation stack outputs and the local environment. Do not install from this

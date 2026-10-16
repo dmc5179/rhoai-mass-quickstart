@@ -10,9 +10,9 @@ build.
 ## Layout
 
 ```
-cluster.env                 Non-secret settings: region, cluster name, sizes
-cloudformation/01_vpc.yaml  Standalone single-AZ VPC
-templates/                  install-config template (CHANGEME placeholders)
+cluster.env                 Non-secret settings: platform, region, sizes
+cloudformation/01_vpc.yaml  Standalone single-AZ VPC (AWS only)
+templates/                  One install-config template per platform
 scripts/                    Numbered phases, run in order
 bin/                        oc, kubectl, openshift-install-fips  (gitignored)
 secrets/                    aws.env, pull-secret.json            (gitignored)
@@ -42,6 +42,32 @@ cd .. && git add rhoai-maas-guide && git commit -m "Bump guide"
 Committing the submodule pointer is what records *which* version of the guide a
 given cluster build was validated against.
 
+## Platforms
+
+Set `PLATFORM` in `cluster.env`. Each platform has its own template under
+`templates/`, and `generate-install-config.sh` dispatches on it.
+
+| `PLATFORM` | State | Notes |
+|---|---|---|
+| `aws` | Working | VPC built separately by CloudFormation and outlives the cluster. GPU machine sets created automatically. |
+| `ibmcloud` | Config generation ready, not yet run | `baseDomain` must be a CIS domain zone in the same account. Set `IBM_VPC_NAME` plus both subnet lists to reuse a VPC, or leave blank to let the installer create one. |
+| `baremetal` | Needs a host list | `platform.baremetal` requires per-host BMC address, credentials, and MAC. Fill in `templates/install-config.yaml.baremetal`. |
+
+Platform differences worth knowing:
+
+- **The separate-network design is AWS-only.** On IBM Cloud, leaving
+  `IBM_VPC_NAME` blank means the installer owns the VPC and destroys it with
+  the cluster. Point it at an existing VPC to get the AWS-like separation.
+- **GPU machine sets are AWS-only.** `add-gpu-machinesets.sh` patches
+  AWS-specific `providerSpec` fields (`instanceType`, `spotMarketOptions`);
+  IBM Cloud uses different field names and has no direct spot equivalent.
+- **Bare metal is three different approaches**, not one — installer-provisioned
+  via BMC, agent-based ISO, or UPI. The template covers the first; see its
+  header comment for how to choose.
+- **MaaS itself already handles all of them.** The guide auto-detects the
+  cluster platform and installs MetalLB plus a passthrough Route on non-cloud
+  clusters, so phase 20 needs no changes for bare metal.
+
 ## Prerequisites
 
 - An AWS account with admin credentials.
@@ -57,7 +83,7 @@ given cluster build was validated against.
 
 ```bash
 cp secrets/aws.env.example secrets/aws.env   # then fill in your keys
-$EDITOR cluster.env                          # region, cluster name, sizing
+$EDITOR cluster.env                          # PLATFORM, region, cluster name
 
 scripts/00-init.sh                           # fetch oc + openshift-install
 scripts/10-deploy-cluster.sh --dry-run       # check wiring

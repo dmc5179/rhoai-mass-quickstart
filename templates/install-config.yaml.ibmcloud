@@ -1,0 +1,54 @@
+# Template install-config for a connected OCP 4.22 cluster on IBM Cloud VPC.
+#
+# Placeholder values marked CHANGEME are filled in by
+# generate-install-config.sh from cluster.env and the local environment.
+# Do not install from this file directly.
+#
+# Prerequisites specific to IBM Cloud:
+#   - baseDomain must be a domain zone in IBM Cloud Internet Services (CIS) in
+#     the same account as the cluster. CIS does not support IPv6. A private
+#     cluster uses IBM Cloud DNS Services instead.
+#   - An IAM API key in secrets/ibm.env, exported as IC_API_KEY. The key needs
+#     access policies for IAM Identity, Resource Group, Cloud Object Storage,
+#     Internet Services, DNS Services, and VPC Infrastructure Services.
+apiVersion: v1
+baseDomain: CHANGEME
+compute:
+- architecture: amd64
+  hyperthreading: Enabled
+  name: worker
+  platform:
+    ibmcloud:
+      type: CHANGEME
+  replicas: 3
+controlPlane:
+  architecture: amd64
+  hyperthreading: Enabled
+  name: master
+  platform:
+    ibmcloud:
+      type: CHANGEME
+  replicas: 3
+metadata:
+  name: CHANGEME
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  ibmcloud:
+    region: CHANGEME
+    # resourceGroupName, vpcName, controlPlaneSubnets, and computeSubnets are
+    # added by generate-install-config.sh only when set in cluster.env. Leaving
+    # vpcName unset makes the installer create and own the VPC, which couples
+    # the network to the cluster lifecycle - unlike the AWS path, where the VPC
+    # outlives the cluster.
+publish: External
+fips: false
+pullSecret: ''
+sshKey: ''

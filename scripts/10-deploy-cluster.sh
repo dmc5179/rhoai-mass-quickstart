@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# 10-deploy-cluster.sh - stand up the base OpenShift cluster in AWS.
+# 10-deploy-cluster.sh - stand up the base OpenShift cluster on the platform
+#                        selected by PLATFORM in cluster.env.
 #
-#   1. ensure the VPC CloudFormation stack exists
-#   2. render install-config.yaml from the stack outputs
+#   1. ensure the network exists (AWS: the VPC CloudFormation stack)
+#   2. render install-config.yaml for the platform in cluster.env
 #   3. run the installer
-#   4. add on-demand and spot GPU machine sets, both at replica 0
+#   4. add on-demand and spot GPU machine sets at replica 0 (AWS only)
 #
 # Usage: scripts/10-deploy-cluster.sh [--dry-run]
 #
-# The VPC stack is deliberately not deleted by `openshift-install destroy
+# On AWS the VPC stack is deliberately not deleted by `openshift-install destroy
 # cluster`, so the cluster can be rebuilt without re-creating the network.
 
 set -euo pipefail
@@ -18,31 +19,51 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-. "${ROOT}/secrets/aws.env"
+# cluster.env first: PLATFORM decides which credential file is needed.
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
 
-echo "==> Checking AWS credentials"
-aws sts get-caller-identity --output text --query 'Arn'
+case "$PLATFORM" in
+    aws)       CREDS="${ROOT}/secrets/aws.env" ;;
+    ibmcloud)  CREDS="${ROOT}/secrets/ibm.env" ;;
+    baremetal) CREDS="" ;;   # no cloud credentials needed
+    *) echo "Error: unsupported PLATFORM='${PLATFORM}' (aws, ibmcloud, baremetal)" >&2; exit 1 ;;
+esac
 
-# --- 1. VPC -----------------------------------------------------------------
-if aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" >/dev/null 2>&1; then
-    echo "==> VPC stack ${VPC_STACK_NAME} already exists; reusing it"
-elif [ "$DRY_RUN" -eq 1 ]; then
-    echo "==> [dry-run] would create VPC stack ${VPC_STACK_NAME} from cloudformation/01_vpc.yaml"
-else
-    echo "==> Creating VPC stack ${VPC_STACK_NAME}"
-    aws cloudformation create-stack \
-        --stack-name "$VPC_STACK_NAME" \
-        --template-body "file://${ROOT}/cloudformation/01_vpc.yaml" \
-        --parameters \
-            "ParameterKey=InfrastructureName,ParameterValue=${VPC_INFRA_NAME}" \
-            "ParameterKey=VpcCidr,ParameterValue=${VPC_CIDR}" \
-            "ParameterKey=AvailabilityZone,ParameterValue=${VPC_AZ}" \
-        --output text --query 'StackId'
+if [ -n "$CREDS" ]; then
+    [ -f "$CREDS" ] || { echo "Error: credentials not found: ${CREDS}" >&2; exit 1; }
+    # shellcheck disable=SC1090
+    . "$CREDS"
+fi
 
-    echo "    Waiting for stack to finish (a few minutes)"
-    aws cloudformation wait stack-create-complete --stack-name "$VPC_STACK_NAME"
+echo "==> Platform: ${PLATFORM}"
+
+# --- 1. network -------------------------------------------------------------
+# Only AWS builds its network separately. On IBM Cloud the installer either
+# creates the VPC or reuses one named in cluster.env; on bare metal the network
+# already exists.
+if [ "$PLATFORM" = "aws" ]; then
+    echo "==> Checking AWS credentials"
+    aws sts get-caller-identity --output text --query 'Arn'
+
+    if aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" >/dev/null 2>&1; then
+        echo "==> VPC stack ${VPC_STACK_NAME} already exists; reusing it"
+    elif [ "$DRY_RUN" -eq 1 ]; then
+        echo "==> [dry-run] would create VPC stack ${VPC_STACK_NAME} from cloudformation/01_vpc.yaml"
+    else
+        echo "==> Creating VPC stack ${VPC_STACK_NAME}"
+        aws cloudformation create-stack \
+            --stack-name "$VPC_STACK_NAME" \
+            --template-body "file://${ROOT}/cloudformation/01_vpc.yaml" \
+            --parameters \
+                "ParameterKey=InfrastructureName,ParameterValue=${VPC_INFRA_NAME}" \
+                "ParameterKey=VpcCidr,ParameterValue=${VPC_CIDR}" \
+                "ParameterKey=AvailabilityZone,ParameterValue=${VPC_AZ}" \
+            --output text --query 'StackId'
+
+        echo "    Waiting for stack to finish (a few minutes)"
+        aws cloudformation wait stack-create-complete --stack-name "$VPC_STACK_NAME"
+    fi
 fi
 
 # --- 2. install-config ------------------------------------------------------
@@ -56,7 +77,8 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "==> [dry-run] would render install-config.yaml via scripts/generate-install-config.sh"
     echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
-    echo "==> [dry-run] would add GPU machine sets (${GPU_INSTANCE_TYPE}, on-demand + spot, replicas=0)"
+    [ "$PLATFORM" = "aws" ] && \
+        echo "==> [dry-run] would add GPU machine sets (${GPU_INSTANCE_TYPE}, on-demand + spot, replicas=0)"
     exit 0
 fi
 
@@ -72,8 +94,14 @@ echo "==> Creating cluster (expect 30-45 minutes)"
 "$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level=info
 
 # --- 4. GPU machine sets ----------------------------------------------------
-# Created at replica 0, so they cost nothing until scaled up.
-"${ROOT}/scripts/add-gpu-machinesets.sh"
+# Created at replica 0, so they cost nothing until scaled up. AWS only: the
+# script patches AWS-specific providerSpec fields (instanceType,
+# spotMarketOptions), which have no direct equivalent on the other platforms.
+if [ "$PLATFORM" = "aws" ]; then
+    "${ROOT}/scripts/add-gpu-machinesets.sh"
+else
+    echo "==> Skipping GPU machine sets (not implemented for ${PLATFORM})"
+fi
 
 cat <<EOF
 
