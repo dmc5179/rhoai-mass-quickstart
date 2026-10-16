@@ -92,7 +92,9 @@ $EDITOR cluster.env                          # PLATFORM, region, cluster name
 scripts/00-init.sh                           # fetch oc + openshift-install
 scripts/10-deploy-cluster.sh --dry-run       # check wiring
 scripts/10-deploy-cluster.sh                 # VPC + cluster, 30-45 min
+scripts/15-gpu-node.sh up                    # optional: GPU node, ~25 min
 scripts/20-deploy-maas.sh                    # RHOAI + MaaS, 20-40 min
+scripts/30-verify-maas.sh                    # end-to-end checks, ~5 min
 scripts/90-destroy-cluster.sh                # tear it all down again
 ```
 
