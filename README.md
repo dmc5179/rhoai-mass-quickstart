@@ -62,7 +62,19 @@ $EDITOR cluster.env                          # region, cluster name, sizing
 scripts/00-init.sh                           # fetch oc + openshift-install
 scripts/10-deploy-cluster.sh --dry-run       # check wiring
 scripts/10-deploy-cluster.sh                 # VPC + cluster, 30-45 min
+scripts/20-deploy-maas.sh                    # RHOAI + MaaS, 20-40 min
 ```
+
+`20-deploy-maas.sh` passes its arguments straight through to the guide's
+`setup-maas.sh`, so anything that script accepts works here:
+
+```bash
+scripts/20-deploy-maas.sh --model simulator      # CPU-only, no GPU needed
+scripts/20-deploy-maas.sh --with-observability
+scripts/20-deploy-maas.sh --from-phase 4         # resume after a failure
+```
+
+With no arguments the guide auto-detects GPU capacity and picks a model.
 
 Then use the cluster:
 
