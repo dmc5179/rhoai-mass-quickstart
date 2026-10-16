@@ -12,6 +12,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `20-deploy-maas.sh` | RHOAI + MaaS + a model, via the guide's `setup-maas.sh`. |
 | `30-verify-maas.sh` | Six-phase platform verification, via the guide's `verify.sh`. |
 | `35-smoke-test.sh` | Real prompt to your model through the gateway. |
+| `40-lightspeed.sh` | Optional. Install OpenShift Lightspeed pointed at your MaaS model. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
 | `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
 | `add-gpu-machinesets.sh` | Create the GPU machine sets. Called by phase 10. |
@@ -28,6 +29,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 20-deploy-maas.sh   <any setup-maas.sh flag>
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
+40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
 cluster-power.sh    {stop|start|status} [--wait]
 logs.sh             [N] | --failed | --last
@@ -62,6 +64,7 @@ scripts/logs.sh --last     # path of the newest log
 | `maas-install` | `20-deploy-maas.sh` |
 | `maas-verify` | `30-verify-maas.sh` |
 | `smoke-test` | `35-smoke-test.sh` |
+| `lightspeed` | `40-lightspeed.sh` |
 | `destroy-<platform>` | `90-destroy-cluster.sh` |
 
 A log with no `RESULT` footer means the run is still going, or was killed.

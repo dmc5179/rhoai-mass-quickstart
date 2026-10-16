@@ -12,6 +12,7 @@ scripts/10-deploy-cluster.sh   # network + OpenShift        ~40 min
 scripts/15-gpu-node.sh up      # optional GPU node          ~25 min
 scripts/20-deploy-maas.sh      # RHOAI + MaaS + a model     ~30 min
 scripts/35-smoke-test.sh       # ask the model a question   ~1 min
+scripts/40-lightspeed.sh install  # optional: console assistant  ~10 min
 ```
 
 ---
