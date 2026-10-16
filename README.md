@@ -93,6 +93,7 @@ scripts/00-init.sh                           # fetch oc + openshift-install
 scripts/10-deploy-cluster.sh --dry-run       # check wiring
 scripts/10-deploy-cluster.sh                 # VPC + cluster, 30-45 min
 scripts/20-deploy-maas.sh                    # RHOAI + MaaS, 20-40 min
+scripts/90-destroy-cluster.sh                # tear it all down again
 ```
 
 `20-deploy-maas.sh` passes its arguments straight through to the guide's
@@ -146,18 +147,32 @@ PATH is deliberately not modified. `bin/ocp-env.sh` exports `$OC`, `$KUBECTL`,
 and `$OPENSHIFT_INSTALL` as explicit paths, so these binaries never collide with
 anything else installed on the host.
 
-## Teardown
+## Parking and teardown
+
+Stop the nodes to pause billing without losing the cluster. Nodes are found
+through the AWS tagging API by the cluster's own infrastructure ID, so this
+picks up whatever exists, including a scaled-up GPU node:
 
 ```bash
-source bin/ocp-env.sh
-"$OPENSHIFT_INSTALL" destroy cluster --dir clusters/rhoai
+scripts/cluster-power.sh status
+scripts/cluster-power.sh stop --wait
+scripts/cluster-power.sh start --wait
 ```
 
-The VPC stack survives. To remove it as well:
+EBS volumes, Elastic IPs, and the NAT gateway are still billed while parked.
+After a restart, nodes usually come back `NotReady` with pending CSRs — the
+script prints the approval command.
+
+To destroy properly, including after a failed or partial install:
 
 ```bash
-aws cloudformation delete-stack --stack-name rhoai-vpc
+scripts/90-destroy-cluster.sh              # keeps the VPC stack
+scripts/90-destroy-cluster.sh --with-vpc   # removes the VPC too
 ```
+
+This works from `metadata.json`, which the installer writes early, so it also
+cleans up a run that died partway. The cluster state directory is archived
+rather than deleted — `--purge` deletes it instead.
 
 ## Notes
 
