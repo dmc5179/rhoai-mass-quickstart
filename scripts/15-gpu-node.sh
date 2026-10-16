@@ -217,69 +217,74 @@ up)
     echo "==> Installing Node Feature Discovery and the NVIDIA GPU operator"
     "$OC" apply -k "${GUIDE}/manifests/01-prerequisites/gpu/"
 
+    # Wait on the exact CSV the subscription installed, rather than grepping
+    # the namespace for anything that says Succeeded.
     echo "    Waiting for the operator CSVs to succeed (up to 10m)"
-    for ns in openshift-nfd nvidia-gpu-operator; do
-        deadline=$(( $(date +%s) + 600 ))
-        while :; do
-            if "$OC" get csv -n "$ns" --no-headers 2>/dev/null | grep -q Succeeded; then
-                echo "    ${ns}: Succeeded"
-                break
-            fi
-            [ "$(date +%s)" -lt "$deadline" ] || {
-                echo "Error: no CSV reached Succeeded in ${ns} within 10m." >&2
-                echo "       Check: \"\$OC\" get csv -n ${ns}" >&2
-                exit 1
-            }
-            sleep 10
-        done
+    for sub in openshift-nfd/nfd nvidia-gpu-operator/gpu-operator-certified; do
+        ns="${sub%%/*}"; name="${sub##*/}"
+        "$OC" wait --for=jsonpath='{.status.installedCSV}' "subscription/${name}" \
+            -n "$ns" --timeout=5m >/dev/null || {
+            echo "Error: subscription ${name} never reported an installed CSV." >&2
+            echo "       Check: \"\$OC\" get subscription,csv -n ${ns}" >&2
+            exit 1
+        }
+        csv="$("$OC" get subscription "$name" -n "$ns" -o jsonpath='{.status.installedCSV}')"
+        "$OC" wait --for=jsonpath='{.status.phase}'=Succeeded "csv/${csv}" \
+            -n "$ns" --timeout=10m >/dev/null || {
+            echo "Error: ${csv} did not reach Succeeded." >&2
+            echo "       Check: \"\$OC\" get csv ${csv} -n ${ns} -o yaml" >&2
+            exit 1
+        }
+        echo "    ${csv}"
     done
 
     # --- instances ---------------------------------------------------------
     # A CSV reporting Succeeded does NOT mean its CRDs are registered and
     # established yet - applying straight after it fails with "no matches for
-    # kind NodeFeatureDiscovery ... ensure CRDs are installed first". Wait for
-    # the CRDs themselves.
+    # kind NodeFeatureDiscovery ... ensure CRDs are installed first".
+    #
+    # --for=create is the half that tolerates the resource not existing yet;
+    # --for=jsonpath and --for=condition both fail instantly with "no matching
+    # resources found" in that case, rather than waiting.
     echo "==> Waiting for the operator CRDs to be established (up to 5m)"
     for crd in nodefeaturediscoveries.nfd.openshift.io clusterpolicies.nvidia.com; do
-        deadline=$(( $(date +%s) + 300 ))
-        until "$OC" get crd "$crd" >/dev/null 2>&1; do
-            [ "$(date +%s)" -lt "$deadline" ] || {
-                echo "Error: CRD ${crd} never appeared." >&2
-                echo "       Check: \"\$OC\" get csv -A | grep -Ei 'nfd|gpu'" >&2
-                exit 1
-            }
-            sleep 5
-        done
-        "$OC" wait --for=condition=established "crd/${crd}" --timeout=120s >/dev/null
+        "$OC" wait --for=create "crd/${crd}" --timeout=5m >/dev/null || {
+            echo "Error: CRD ${crd} never appeared." >&2
+            echo "       Check: \"\$OC\" get csv -A | grep -Ei 'nfd|gpu'" >&2
+            exit 1
+        }
+        "$OC" wait --for=condition=established "crd/${crd}" --timeout=2m >/dev/null
         echo "    ${crd}"
     done
 
     echo "==> Creating NodeFeatureDiscovery and ClusterPolicy"
     "$OC" apply -k "${GUIDE}/manifests/01-prerequisites/gpu/instances/"
 
-    # --- wait for the node -------------------------------------------------
+    # --- wait for the GPU stack --------------------------------------------
     # The slow part: EC2 has to start the instance, it has to join the cluster,
     # NFD has to label it, then the GPU operator has to build and load the
-    # driver on it. Twenty-five minutes is not unusual on a first run.
-    echo "==> Waiting for a node to advertise nvidia.com/gpu (up to 25m)"
-    deadline=$(( $(date +%s) + 1500 ))
-    while :; do
-        ready="$("$OC" get nodes -l nvidia.com/gpu.present=true \
-            -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' 2>/dev/null || true)"
-        if [ -n "$ready" ] && [ "$ready" != "0" ]; then
-            echo "    GPU capacity reported: ${ready}"
-            break
-        fi
-        [ "$(date +%s)" -lt "$deadline" ] || {
-            echo "Error: no GPU node became ready within 25m." >&2
-            echo "       Machines:  \"\$OC\" get machines -n ${MAPI}" >&2
-            echo "       GPU pods:  \"\$OC\" get pods -n nvidia-gpu-operator" >&2
-            echo "       A spot machine set can sit unfulfilled if there is no" >&2
-            echo "       capacity at the current price." >&2
-            exit 1
-        }
-        sleep 20
-    done
+    # driver. Twenty-five minutes is not unusual on a first run.
+    #
+    # ClusterPolicy carries a real Ready condition covering the whole stack -
+    # driver, container toolkit, device plugin, DCGM, feature discovery - so
+    # wait on that rather than polling the node for capacity. When it fails it
+    # names the component that is stuck, which bare capacity polling cannot.
+    echo "==> Waiting for the GPU stack to become Ready (up to 25m)"
+    if ! "$OC" wait --for=condition=Ready clusterpolicy/gpu-cluster-policy --timeout=25m; then
+        echo >&2
+        echo "Error: the NVIDIA ClusterPolicy did not become Ready." >&2
+        "$OC" get clusterpolicy gpu-cluster-policy \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.message}{"\n"}{end}' >&2 2>/dev/null || true
+        echo "       Machines: \"\$OC\" get machines -n ${MAPI}" >&2
+        echo "       GPU pods: \"\$OC\" get pods -n nvidia-gpu-operator" >&2
+        exit 1
+    fi
+
+    # The device plugin advertises capacity shortly after the policy is Ready.
+    "$OC" wait --for=create node -l nvidia.com/gpu.present=true --timeout=2m >/dev/null 2>&1 || true
+    GPU_CAPACITY="$("$OC" get nodes -l nvidia.com/gpu.present=true \
+        -o jsonpath='{.items[*].status.capacity.nvidia\.com/gpu}' 2>/dev/null || true)"
+    echo "    GPU capacity reported: ${GPU_CAPACITY:-none yet}"
 
     echo
     show_status
