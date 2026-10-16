@@ -16,6 +16,8 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
 | `add-gpu-machinesets.sh` | Create the GPU machine sets. Called by phase 10. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
+| `logs.sh` | List recent runs and whether they passed. |
+| `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
 
 ### Options
 
@@ -28,11 +30,41 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
 cluster-power.sh    {stop|start|status} [--wait]
+logs.sh             [N] | --failed | --last
 ```
 
 Useful `setup-maas.sh` flags, passed through by phase 20: `--model`,
 `--from-phase N`, `--skip-models`, `--skip-verify`, `--with-observability`,
 `--with-external-models`, `--with-redis`, `--disconnected`, `--dry-run`.
+
+## Logs
+
+Every phase script tees its output to `logs/<prefix>-<timestamp>.log` and ends
+it with a machine-readable footer:
+
+```
+=== RESULT OK exit=0 2026-10-16T17:48:04Z ===
+=== RESULT FAILED exit=1 2026-10-16T17:48:03Z ===
+```
+
+So you can run a long phase, then just check:
+
+```bash
+scripts/logs.sh            # recent runs and their status
+scripts/logs.sh --failed   # only failures
+scripts/logs.sh --last     # path of the newest log
+```
+
+| Prefix | Script |
+|---|---|
+| `deploy-<platform>` | `10-deploy-cluster.sh` |
+| `gpu-node` | `15-gpu-node.sh` |
+| `maas-install` | `20-deploy-maas.sh` |
+| `maas-verify` | `30-verify-maas.sh` |
+| `smoke-test` | `35-smoke-test.sh` |
+| `destroy-<platform>` | `90-destroy-cluster.sh` |
+
+A log with no `RESULT` footer means the run is still going, or was killed.
 
 ## cluster.env
 

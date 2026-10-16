@@ -22,6 +22,11 @@ GUIDE="${ROOT}/rhoai-maas-guide"
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
 
+ORIG_ARGS=("$@")
+. "${ROOT}/scripts/lib-logging.sh"
+start_logging "maas-install" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+
+
 [ -f "${GUIDE}/scripts/setup-maas.sh" ] || {
     echo "Error: guide submodule is not checked out. Run:" >&2
     echo "       git submodule update --init" >&2
@@ -60,4 +65,6 @@ esac
 
 # The guide's paths are relative to its own repo root.
 cd "$GUIDE"
-exec ./scripts/setup-maas.sh ${ARGS[@]+"${ARGS[@]}"}
+# Not exec: that would replace this process and skip the EXIT trap that
+# writes the RESULT footer into the log.
+./scripts/setup-maas.sh ${ARGS[@]+"${ARGS[@]}"}

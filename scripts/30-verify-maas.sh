@@ -29,6 +29,11 @@ GUIDE="${ROOT}/rhoai-maas-guide"
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
 
+ORIG_ARGS=("$@")
+. "${ROOT}/scripts/lib-logging.sh"
+start_logging "maas-verify" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+
+
 VERIFY="${GUIDE}/manifests/06-verification/verify.sh"
 [ -f "$VERIFY" ] || {
     echo "Error: guide submodule is not checked out. Run:" >&2
@@ -68,4 +73,5 @@ echo "==> Using cluster: $("$OC" whoami --show-server)"
 echo "==> Guide pinned at: $(git -C "$GUIDE" rev-parse --short HEAD)"
 
 cd "$GUIDE"
-exec "$VERIFY" "$@"
+# Not exec: see 20-deploy-maas.sh - the EXIT trap writes the log footer.
+"$VERIFY" "$@"

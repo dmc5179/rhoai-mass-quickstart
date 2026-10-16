@@ -26,6 +26,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GUIDE="${ROOT}/rhoai-maas-guide"
+
+# Captured before the parse loop consumes "$@"; the logging re-exec
+# needs to hand the child the same arguments this run got.
+ORIG_ARGS=("$@")
 ACTION="${1:-}"; shift || true
 USE_SPOT=0
 REPLICAS=1
@@ -51,6 +55,10 @@ esac
 
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
+
+. "${ROOT}/scripts/lib-logging.sh"
+start_logging "gpu-node" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+
 
 command -v jq >/dev/null || { echo "Error: 'jq' is not installed." >&2; exit 1; }
 

@@ -18,6 +18,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Captured before the parse loop consumes "$@"; the logging re-exec
+# needs to hand the child the same arguments this run got.
+ORIG_ARGS=("$@")
 PROMPT="In one sentence, what is Kubernetes?"
 MODEL=""
 KEEP_KEY=0
@@ -34,6 +38,10 @@ done
 
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
+
+. "${ROOT}/scripts/lib-logging.sh"
+start_logging "smoke-test" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
+
 
 for c in jq curl; do command -v "$c" >/dev/null || { echo "Error: '$c' is not installed." >&2; exit 1; }; done
 
