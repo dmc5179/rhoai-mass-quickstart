@@ -53,13 +53,13 @@ fi
 
 # --- 3. install -------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "==> [dry-run] would render install-config.yaml via scripts/generate-config.sh"
+    echo "==> [dry-run] would render install-config.yaml via scripts/generate-install-config.sh"
     echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
     exit 0
 fi
 
 echo "==> Generating install-config.yaml"
-"${ROOT}/scripts/generate-config.sh"
+"${ROOT}/scripts/generate-install-config.sh"
 
 # The installer consumes (and rewrites) install-config.yaml in its state
 # directory, so hand it a copy and keep the rendered original for reference.

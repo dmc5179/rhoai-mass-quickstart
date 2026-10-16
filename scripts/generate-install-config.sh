@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# generate-config.sh - render install-config.yaml from the local template using
-#                      the outputs of the VPC CloudFormation stack.
+# generate-install-config.sh - render install-config.yaml from the local
+#                              template, using the outputs of the VPC
+#                              CloudFormation stack.
 #
-# Usage: scripts/generate-config.sh [-o <output file>]
+# Usage: scripts/generate-install-config.sh [-o <output file>]
 #
 # Reads settings from cluster.env and credentials from the environment (see
 # secrets/aws.env). The VPC stack must already exist; 10-deploy-cluster.sh
@@ -18,8 +19,8 @@ OUTPUT_FILE="${ROOT}/install-config.yaml"
 while [ $# -gt 0 ]; do
     case "$1" in
         -o|--output) OUTPUT_FILE="$2"; shift 2 ;;
-        -h|--help)   sed -n '2,10p' "${BASH_SOURCE[0]}"; exit 0 ;;
-        *) echo "generate-config.sh: unknown option '$1'" >&2; exit 2 ;;
+        -h|--help)   sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) echo "generate-install-config.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
 

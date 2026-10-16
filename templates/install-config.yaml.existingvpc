@@ -1,6 +1,6 @@
 # Template install-config for a connected OCP 4.22 cluster in a pre-existing VPC.
 #
-# Placeholder values marked CHANGEME are filled in by generate-config.sh from the
+# Placeholder values marked CHANGEME are filled in by generate-install-config.sh from the
 # CloudFormation stack outputs and the local environment. Do not install from this
 # file directly.
 apiVersion: v1
@@ -48,7 +48,7 @@ platform:
     # the VPC contain no non-cluster subnets - which would defeat the point of
     # keeping this VPC independent of the cluster.
     #
-    # generate-config.sh replaces this whole block with the InstallConfigSubnets
+    # generate-install-config.sh replaces this whole block with the InstallConfigSubnets
     # output of the VPC stack.
     vpc:
       subnets:
