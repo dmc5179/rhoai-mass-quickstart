@@ -26,3 +26,8 @@
 # and account identifiers, so keep it local.
 /logs/*
 !/logs/.gitkeep
+
+# Scratch git worktrees created for background agents. Transient, and each one
+# is a full checkout of this repo. Note this does not ignore .claude/skills/,
+# which is tracked if we add project skills.
+/.claude/worktrees/
