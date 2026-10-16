@@ -70,6 +70,28 @@ patch_aws() {
             --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
     }
 
+    # The subnet IDs come from the VPC stack, so it has to exist first.
+    # 10-deploy-cluster.sh creates it; this script never does, to keep network
+    # creation in one place.
+    if ! aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" >/dev/null 2>&1; then
+        echo "Error: CloudFormation stack '${VPC_STACK_NAME}' does not exist in ${region}." >&2
+        echo "       This script reads the cluster's subnet IDs from that stack, so the" >&2
+        echo "       network has to be created first. Either run the full deploy:" >&2
+        echo >&2
+        echo "           scripts/10-deploy-cluster.sh" >&2
+        echo >&2
+        echo "       which creates the stack and then renders this file, or create just" >&2
+        echo "       the stack and re-run this script:" >&2
+        echo >&2
+        echo "           aws cloudformation create-stack --stack-name ${VPC_STACK_NAME} \\" >&2
+        echo "               --template-body file://${ROOT}/cloudformation/01_vpc.yaml \\" >&2
+        echo "               --parameters ParameterKey=InfrastructureName,ParameterValue=${VPC_INFRA_NAME} \\" >&2
+        echo "                            ParameterKey=VpcCidr,ParameterValue=${VPC_CIDR} \\" >&2
+        echo "                            ParameterKey=AvailabilityZone,ParameterValue=${VPC_AZ}" >&2
+        echo "           aws cloudformation wait stack-create-complete --stack-name ${VPC_STACK_NAME}" >&2
+        exit 1
+    fi
+
     echo "==> Reading outputs from stack ${VPC_STACK_NAME}"
     az="$(stack_output AvailabilityZone)"
     subnets_yaml="$(stack_output InstallConfigSubnets)"
@@ -210,6 +232,15 @@ patch_baremetal() {
 echo "==> Platform: ${PLATFORM}"
 echo "==> Rendering ${OUTPUT_FILE}"
 cp "$TEMPLATE" "$OUTPUT_FILE"
+
+# Never leave a half-rendered config behind: one with CHANGEME placeholders
+# still in it looks plausible enough to be used by mistake.
+cleanup_partial() {
+    local rc=$?
+    [ "$rc" -ne 0 ] && rm -f "$OUTPUT_FILE" "${OUTPUT_FILE%/*}/agent-config.yaml"
+    return $rc
+}
+trap cleanup_partial EXIT
 
 "patch_${PLATFORM}"
 
