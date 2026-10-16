@@ -153,32 +153,58 @@ patch_ibmcloud() {
     fi
 }
 
-# --- platform: baremetal ----------------------------------------------------
+# --- platform: baremetal (agent-based installer) ----------------------------
+# Also renders agent-config.yaml alongside install-config.yaml; the agent
+# installer consumes both when building the ISO.
 patch_baremetal() {
     : "${BASE_DOMAIN:?BASE_DOMAIN must be set in cluster.env for baremetal}"
-    : "${BM_API_VIP:?BM_API_VIP must be set in cluster.env}"
-    : "${BM_INGRESS_VIP:?BM_INGRESS_VIP must be set in cluster.env}"
+    : "${BM_MACHINE_CIDR:?BM_MACHINE_CIDR must be set in cluster.env}"
+    : "${BM_RENDEZVOUS_IP:?BM_RENDEZVOUS_IP must be set in cluster.env}"
+
+    local agent_template="${ROOT}/templates/agent-config.yaml.baremetal"
+    local agent_out="${OUTPUT_FILE%/*}/agent-config.yaml"
+    [ -f "$agent_template" ] || { echo "Error: missing ${agent_template}" >&2; exit 1; }
 
     yq -y -i \
-        --arg api "$BM_API_VIP" \
-        --arg ing "$BM_INGRESS_VIP" \
         --arg cidr "$BM_MACHINE_CIDR" \
-        '.platform.baremetal.apiVIPs = [$api]
-         | .platform.baremetal.ingressVIPs = [$ing]
-         | .networking.machineNetwork = [{"cidr": $cidr}]' \
+        --argjson cp "$BM_CONTROL_PLANE_REPLICAS" \
+        --argjson wk "$BM_COMPUTE_REPLICAS" \
+        '.networking.machineNetwork = [{"cidr": $cidr}]
+         | .controlPlane.replicas = $cp
+         | .compute[0].replicas = $wk' \
         "$OUTPUT_FILE"
 
-    # platform.baremetal requires a hosts list, and BMC addresses, credentials,
-    # and MAC addresses are per-machine facts that cannot be templated. Stop
-    # here rather than hand the installer a config it will reject.
-    if [ "$(yq -r '.platform.baremetal.hosts | length' "$OUTPUT_FILE")" -eq 0 ]; then
-        echo >&2
-        echo "Error: platform.baremetal requires a hosts list, and the template has none." >&2
-        echo "       Add your machines to templates/install-config.yaml.baremetal" >&2
-        echo "       (BMC address, credentials, bootMACAddress per host), or switch to" >&2
-        echo "       the agent-based installer if BMC access is not available." >&2
+    # Single-node OpenShift cannot use platform.baremetal at all. The installer
+    # rejects it with "Only platform none and external supports 1 ControlPlane
+    # and 0 Compute nodes", so swap the whole platform stanza for `none`. VIPs
+    # go with it: one node has nothing to balance across.
+    if [ "$BM_CONTROL_PLANE_REPLICAS" = "1" ] && [ "$BM_COMPUTE_REPLICAS" = "0" ]; then
+        echo "    single-node cluster: using 'platform: none' and no VIPs"
+        yq -y -i '.platform = {"none": {}}' "$OUTPUT_FILE"
+    else
+        : "${BM_API_VIP:?BM_API_VIP must be set in cluster.env (except for single-node)}"
+        : "${BM_INGRESS_VIP:?BM_INGRESS_VIP must be set in cluster.env (except for single-node)}"
+        yq -y -i \
+            --arg api "$BM_API_VIP" \
+            --arg ing "$BM_INGRESS_VIP" \
+            '.platform.baremetal.apiVIPs = [$api]
+             | .platform.baremetal.ingressVIPs = [$ing]' \
+            "$OUTPUT_FILE"
+    fi
+
+    cp "$agent_template" "$agent_out"
+    yq -y -i \
+        --arg name "$CLUSTER_NAME" \
+        --arg ip "$BM_RENDEZVOUS_IP" \
+        '.metadata.name = $name | .rendezvousIP = $ip' \
+        "$agent_out"
+
+    if grep -q CHANGEME "$agent_out"; then
+        echo "Error: unresolved CHANGEME placeholders in ${agent_out}:" >&2
+        grep -n CHANGEME "$agent_out" >&2
         exit 1
     fi
+    echo "    wrote ${agent_out}"
 }
 
 echo "==> Platform: ${PLATFORM}"

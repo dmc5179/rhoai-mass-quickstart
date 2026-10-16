@@ -1,0 +1,41 @@
+# Agent config for the agent-based installer, paired with
+# install-config.yaml.baremetal.
+#
+# generate-install-config.sh fills in the name and rendezvousIP from
+# cluster.env and writes the result next to install-config.yaml.
+#
+# Every field except rendezvousIP is optional. With DHCP on the machine
+# network, this file as generated is enough.
+#
+# Add a hosts list only if you need static IPs, or need to pin which physical
+# machine takes which role or which disk is installed to. Each entry must
+# include at least one interface, matched by MAC address:
+#
+# hosts:
+# - hostname: master-0
+#   role: master
+#   rootDeviceHints:
+#     deviceName: /dev/sda
+#   interfaces:
+#   - name: eno1
+#     macAddress: aa:bb:cc:dd:ee:01
+#   networkConfig:          # NMState format, see https://nmstate.io/examples.html
+#     interfaces:
+#     - name: eno1
+#       type: ethernet
+#       state: up
+#       mac-address: aa:bb:cc:dd:ee:01
+#       ipv4:
+#         enabled: true
+#         dhcp: false
+#         address:
+#         - ip: 10.0.0.21
+#           prefix-length: 24
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: CHANGEME
+# The node that bootstraps the cluster. Must be one of the machines you boot
+# from the ISO, and must be a control plane node. Pick a static address, or a
+# DHCP reservation, because the other nodes rendezvous on it by IP.
+rendezvousIP: CHANGEME

@@ -5,15 +5,19 @@
 /bin/ocp-env.sh
 
 # Credentials. Never commit these.
+# Everything in secrets/ is ignored except the placeholder templates, which are
+# listed one by one on purpose. Do not generalise these to "!/secrets/*.example":
+# a real credential saved under an .example name would then be committed.
 /secrets/*
 !/secrets/.gitkeep
 !/secrets/aws.env.example
+!/secrets/ibm.env.example
 
 # Installer state: kubeconfig, kubeadmin password, and the metadata required to
 # destroy the cluster. Keep it locally, keep it out of git.
 /clusters/*
 !/clusters/.gitkeep
 
-# Rendered from templates/install-config.yaml.existingvpc; contains the pull
-# secret.
+# Rendered from templates/; install-config.yaml contains the pull secret.
 /install-config.yaml
+/agent-config.yaml

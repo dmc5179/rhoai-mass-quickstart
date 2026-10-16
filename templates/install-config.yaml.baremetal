@@ -1,30 +1,20 @@
-# Template install-config for a connected OCP 4.22 cluster on bare metal.
+# Template install-config for a connected OCP 4.22 cluster on bare metal,
+# installed with the agent-based installer.
 #
-# INCOMPLETE - see "hosts" below. This template covers installer-provisioned
-# bare metal (platform.baremetal), where the installer drives each machine over
-# its BMC. That is one of three bare-metal approaches, and the right one
-# depends on your environment:
+# Placeholder values marked CHANGEME are filled in by
+# generate-install-config.sh from cluster.env. Do not install from this file
+# directly.
 #
-#   platform.baremetal (this file)
-#       The installer powers machines on and off over Redfish/IPMI and
-#       provisions them. Requires BMC address and credentials plus the boot MAC
-#       for every host. `hosts` is a required field - the installer rejects the
-#       config without it.
+# The agent-based installer builds a bootable ISO from this file plus
+# agent-config.yaml, and you start the machines yourself. There is no BMC
+# access and no provisioning network, which is what makes it the practical
+# choice for most lab hardware. Phase 10 runs
+# `openshift-install agent create image` rather than `create cluster`.
 #
-#   Agent-based installer
-#       You generate a bootable ISO and start the machines yourself. Uses
-#       agent-config.yaml alongside install-config.yaml, and
-#       `openshift-install agent create image` rather than `create cluster`.
-#       No BMC access needed. Usually the easier path for lab hardware.
-#
-#   platform.none (UPI)
-#       You provision machines, load balancers, and DNS entirely yourself.
-#       Most work, most control.
-#
-# generate-install-config.sh fills in baseDomain, metadata.name, the VIPs, and
-# machineNetwork from cluster.env. The hosts list has to be written by hand
-# because BMC addresses, credentials, and MAC addresses are per-machine facts
-# that cannot be templated.
+# Note there is deliberately no platform.baremetal.hosts list here. That field
+# is required for BMC-driven installs (platform.baremetal IPI), but for
+# agent-based installs the host details live in agent-config.yaml instead, and
+# are only needed at all for static networking or disk selection.
 apiVersion: v1
 baseDomain: CHANGEME
 compute:
@@ -51,29 +41,12 @@ networking:
   - 172.30.0.0/16
 platform:
   baremetal:
+    # Two free IPs on the machine network, not in any DHCP pool. These must
+    # resolve as api.<cluster>.<basedomain> and *.apps.<cluster>.<basedomain>.
     apiVIPs:
     - CHANGEME
     ingressVIPs:
     - CHANGEME
-    # provisioningNetwork: "Disabled" drops the dedicated provisioning network
-    # and drives everything over the baremetal network. Simplest for a lab; set
-    # to "Managed" and add the provisioning* fields if you have a separate
-    # provisioning VLAN.
-    provisioningNetwork: "Disabled"
-    # REQUIRED. One entry per machine. Example shape:
-    #
-    # hosts:
-    # - name: master-0
-    #   role: master
-    #   bmc:
-    #     address: redfish-virtualmedia://192.168.1.10/redfish/v1/Systems/1
-    #     username: admin
-    #     password: <password>
-    #     disableCertificateVerification: true
-    #   bootMACAddress: aa:bb:cc:dd:ee:01
-    #   rootDeviceHints:
-    #     deviceName: /dev/sda
-    hosts: []
 publish: External
 fips: false
 pullSecret: ''

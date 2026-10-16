@@ -5,7 +5,7 @@
 #
 #   1. ensure the network exists (AWS: the VPC CloudFormation stack)
 #   2. render install-config.yaml for the platform in cluster.env
-#   3. run the installer
+#   3. run the installer (bare metal: build an agent ISO and wait for it)
 #   4. add on-demand and spot GPU machine sets at replica 0 (AWS only)
 #
 # Usage: scripts/10-deploy-cluster.sh [--dry-run]
@@ -68,15 +68,26 @@ fi
 
 # --- 2. install-config ------------------------------------------------------
 if [ -d "$CLUSTER_DIR" ] && [ -n "$(ls -A "$CLUSTER_DIR" 2>/dev/null)" ]; then
-    echo "Error: ${CLUSTER_DIR} is not empty. Destroy the previous cluster first:" >&2
-    echo "       \"\$OPENSHIFT_INSTALL\" destroy cluster --dir ${CLUSTER_DIR}" >&2
+    echo "Error: ${CLUSTER_DIR} is not empty." >&2
+    if [ "$PLATFORM" = "baremetal" ]; then
+        echo "       Agent-based installs cannot be destroyed from here; wipe the" >&2
+        echo "       machines, then remove the directory to start over." >&2
+    else
+        echo "       Destroy the previous cluster first:" >&2
+        echo "       \"\$OPENSHIFT_INSTALL\" destroy cluster --dir ${CLUSTER_DIR}" >&2
+    fi
     exit 1
 fi
 
 # --- 3. install -------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "==> [dry-run] would render install-config.yaml via scripts/generate-install-config.sh"
-    echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
+    if [ "$PLATFORM" = "baremetal" ]; then
+        echo "==> [dry-run] would also render agent-config.yaml"
+        echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL agent create image --dir ${CLUSTER_DIR}"
+    else
+        echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
+    fi
     [ "$PLATFORM" = "aws" ] && \
         echo "==> [dry-run] would add GPU machine sets (${GPU_INSTANCE_TYPE}, on-demand + spot, replicas=0)"
     exit 0
@@ -85,13 +96,37 @@ fi
 echo "==> Generating install-config.yaml"
 "${ROOT}/scripts/generate-install-config.sh"
 
-# The installer consumes (and rewrites) install-config.yaml in its state
-# directory, so hand it a copy and keep the rendered original for reference.
+# The installer consumes (and rewrites) these in its state directory, so hand
+# it copies and keep the rendered originals for reference.
 mkdir -p "$CLUSTER_DIR"
 cp "${ROOT}/install-config.yaml" "${CLUSTER_DIR}/install-config.yaml"
 
-echo "==> Creating cluster (expect 30-45 minutes)"
-"$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level=info
+if [ "$PLATFORM" = "baremetal" ]; then
+    # Agent-based: build a bootable ISO, then wait for the machines that you
+    # start from it. There is no cloud API to create machines through, so the
+    # installer cannot do this part.
+    cp "${ROOT}/agent-config.yaml" "${CLUSTER_DIR}/agent-config.yaml"
+
+    echo "==> Building agent ISO"
+    "$OPENSHIFT_INSTALL" agent create image --dir "$CLUSTER_DIR" --log-level=info
+
+    cat <<EOF
+
+ISO ready: ${CLUSTER_DIR}/agent.x86_64.iso
+
+Boot all ${BM_CONTROL_PLANE_REPLICAS} control plane and ${BM_COMPUTE_REPLICAS} worker machines from it now.
+The node at ${BM_RENDEZVOUS_IP} bootstraps the cluster and must be among them.
+
+Waiting for the install to complete. Interrupting here is safe - resume with:
+    "\$OPENSHIFT_INSTALL" agent wait-for install-complete --dir ${CLUSTER_DIR}
+
+EOF
+    "$OPENSHIFT_INSTALL" agent wait-for bootstrap-complete --dir "$CLUSTER_DIR" --log-level=info
+    "$OPENSHIFT_INSTALL" agent wait-for install-complete --dir "$CLUSTER_DIR" --log-level=info
+else
+    echo "==> Creating cluster (expect 30-45 minutes)"
+    "$OPENSHIFT_INSTALL" create cluster --dir "$CLUSTER_DIR" --log-level=info
+fi
 
 # --- 4. GPU machine sets ----------------------------------------------------
 # Created at replica 0, so they cost nothing until scaled up. AWS only: the

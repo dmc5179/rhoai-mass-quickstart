@@ -51,7 +51,7 @@ Set `PLATFORM` in `cluster.env`. Each platform has its own template under
 |---|---|---|
 | `aws` | Working | VPC built separately by CloudFormation and outlives the cluster. GPU machine sets created automatically. |
 | `ibmcloud` | Config generation ready, not yet run | `baseDomain` must be a CIS domain zone in the same account. Set `IBM_VPC_NAME` plus both subnet lists to reuse a VPC, or leave blank to let the installer create one. |
-| `baremetal` | Needs a host list | `platform.baremetal` requires per-host BMC address, credentials, and MAC. Fill in `templates/install-config.yaml.baremetal`. |
+| `baremetal` | Config generation ready, not yet run | Agent-based installer: phase 10 builds a bootable ISO and you start the machines yourself. No BMC access needed. |
 
 Platform differences worth knowing:
 
@@ -61,9 +61,13 @@ Platform differences worth knowing:
 - **GPU machine sets are AWS-only.** `add-gpu-machinesets.sh` patches
   AWS-specific `providerSpec` fields (`instanceType`, `spotMarketOptions`);
   IBM Cloud uses different field names and has no direct spot equivalent.
-- **Bare metal is three different approaches**, not one — installer-provisioned
-  via BMC, agent-based ISO, or UPI. The template covers the first; see its
-  header comment for how to choose.
+- **Bare metal builds an ISO instead of calling a cloud API.** Phase 10 runs
+  `openshift-install agent create image`, prints the ISO path, and then blocks
+  on `agent wait-for` while you boot the machines. Interrupting that wait is
+  safe; the command to resume it is printed. Set `BM_RENDEZVOUS_IP` to a
+  control plane node with a stable address — the other nodes find it by IP.
+  Setting `BM_CONTROL_PLANE_REPLICAS=1` and `BM_COMPUTE_REPLICAS=0` switches
+  to single-node OpenShift, which uses `platform: none` and no VIPs.
 - **MaaS itself already handles all of them.** The guide auto-detects the
   cluster platform and installs MetalLB plus a passthrough Route on non-cloud
   clusters, so phase 20 needs no changes for bare metal.
