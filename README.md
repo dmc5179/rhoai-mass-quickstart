@@ -15,14 +15,23 @@ scripts/40-lightspeed.sh install  # optional: console assistant  ~10 min
 ```
 
 GPU nodes are no longer a script. They come from the `gpu-nodes` AutoShift
-policy in phase 50, driven by the labels `scripts/55-autoshift-values.sh`
+policy in phase 50, driven by the labels `scripts/45-autoshift-values.sh`
 renders:
 
 ```bash
-scripts/50-autoshift.sh bootstrap                  # ACM + GitOps + AutoShift
-scripts/55-autoshift-values.sh --replicas 1 --force   # ask for one GPU node
-scripts/50-autoshift.sh adopt                      # hub manages itself
+scripts/45-autoshift-values.sh --replicas 1 --force   # ask for one GPU node
+scripts/50-autoshift.sh bootstrap                     # ACM + GitOps + AutoShift
+scripts/50-autoshift.sh adopt                         # hub manages itself
 ```
+
+Order matters. Helm reads values at install time, so phase 45 has to run
+before the bootstrap that applies it — running it afterwards means another
+bootstrap. Phase 45 needs only a reachable cluster, not ACM.
+
+`adopt` is the step that cannot be undone by editing values: it activates
+every enabled policy at once, and turning a label back off stops reconciling
+without uninstalling anything. See
+[docs/running-under-autoshift.md](docs/running-under-autoshift.md).
 
 ---
 

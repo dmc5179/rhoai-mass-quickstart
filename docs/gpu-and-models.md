@@ -58,18 +58,18 @@ image](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai_self-m
 
 ```bash
 # GPU nodes come from the gpu-nodes AutoShift policy, not a script.
-scripts/55-autoshift-values.sh --replicas 1 --force          # on-demand
-scripts/55-autoshift-values.sh --replicas 1 --spot --force   # spot, cheaper, reclaimable
+scripts/45-autoshift-values.sh --replicas 1 --force          # on-demand
+scripts/45-autoshift-values.sh --replicas 1 --spot --force   # spot, cheaper, reclaimable
 scripts/50-autoshift.sh bootstrap                            # apply
 scripts/50-autoshift.sh status
 
 # Back to zero: regenerate with --replicas 0 and re-apply. The MachineSet
 # stays, costing nothing, so scaling back up is immediate.
-scripts/55-autoshift-values.sh --replicas 0 --force
+scripts/45-autoshift-values.sh --replicas 0 --force
 scripts/50-autoshift.sh bootstrap
 ```
 
-`up` takes about 25 minutes and does four things, because all four are needed
+Bringing a node up takes about 25 minutes and needs four things, because all four are needed
 before the guide can see a GPU:
 
 1. scales the GPU machine set from 0

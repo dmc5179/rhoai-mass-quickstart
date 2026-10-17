@@ -198,7 +198,7 @@ fi
 # --- 4. GPU machine sets ----------------------------------------------------
 # Not created here any more. The gpu-nodes AutoShift policy owns them, so they
 # arrive with phase 50 rather than phase 10, and are driven by the
-# autoshift.io/gpu-nodes-* labels that scripts/55-autoshift-values.sh renders.
+# autoshift.io/gpu-nodes-* labels that scripts/45-autoshift-values.sh renders.
 #
 # This is not just a relocation. The script this replaced addressed MachineSets
 # by their short name, which stops working the moment ACM is installed: ACM

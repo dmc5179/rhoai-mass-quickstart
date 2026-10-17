@@ -69,7 +69,7 @@ You got the CPU simulator. The guide detects GPUs by reading the
 Empty means no GPU was visible when phase 20 ran. Fix:
 
 ```bash
-scripts/55-autoshift-values.sh --replicas 1 --force   # ask for a GPU node
+scripts/45-autoshift-values.sh --replicas 1 --force   # ask for a GPU node
 scripts/50-autoshift.sh bootstrap                     # apply it
 $EDITOR cluster.env          # MAAS_MODEL="granite-tiny-gpu"
 scripts/20-deploy-maas.sh --from-phase 5

@@ -300,25 +300,55 @@ HELM_ARGS=(upgrade --install autoshift ./autoshift -n "$GITOPS_NS")
 # Order matters: cluster overrides clusterset overrides global. The per-cluster
 # file is keyed on the ACM ManagedCluster name, which for a hub managing itself
 # is 'local-cluster' rather than $CLUSTER_NAME. Generate it with
-# scripts/55-autoshift-values.sh; it is skipped silently when absent.
+# scripts/45-autoshift-values.sh; it is skipped silently when absent.
 CLUSTER_VALUES="${AUTOSHIFT_CLUSTER_VALUES:-local-cluster}"
 for f in autoshift/values/global.yaml \
          "autoshift/values/clustersets/${CLUSTERSET}.yaml" \
          "autoshift/values/clusters/${CLUSTER_VALUES}.yaml"; do
     [ -f "$f" ] && HELM_ARGS+=(-f "$f")
 done
+
+# Helm reads values at install time, so a per-cluster file written after this
+# point does nothing until the next bootstrap. Say so now rather than letting
+# someone discover it when their GPU node never appears.
+if [ ! -f "autoshift/values/clusters/${CLUSTER_VALUES}.yaml" ]; then
+    cat >&2 <<EOF
+    WARNING: no per-cluster values at autoshift/values/clusters/${CLUSTER_VALUES}.yaml
+    Anything driven by per-cluster labels - GPU nodes in particular - will not
+    be configured. Generate it and re-run this command:
+
+        scripts/45-autoshift-values.sh --replicas 1 --force
+        scripts/50-autoshift.sh bootstrap
+EOF
+fi
 [ -n "${AUTOSHIFT_EXTRA_VALUES:-}" ] && HELM_ARGS+=(-f "$AUTOSHIFT_EXTRA_VALUES")
 "$HELM" "${HELM_ARGS[@]}"
 
 cat <<EOF
 
 AutoShift is installed. It is not acting on anything yet - the hub has to be
-added to a clusterset first:
+added to a clusterset before any policy applies.
 
-    scripts/50-autoshift.sh adopt
+Do these IN ORDER. Helm reads values at install time, so anything written
+after this bootstrap needs another bootstrap to take effect:
 
-Then enable policies by setting their labels to 'true' in the values files
-(never on the ManagedCluster directly), re-run the install, and watch:
+    1. scripts/45-autoshift-values.sh --replicas 1 --force
+         Per-cluster values: GPU node count, instance type, zone. Skip this
+         and you get no GPU node, with nothing reporting an error.
 
-    scripts/50-autoshift.sh status
+    2. Set the policy labels you want in
+         ${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml
+         Set them in the values files, never on the ManagedCluster directly.
+         RHOAI MaaS is four labels that have to move together: openshift-ai,
+         connectivity-link, openshift-ai-maas, openshift-ai-models.
+
+    3. scripts/50-autoshift.sh bootstrap
+         Again, to apply 1 and 2.
+
+    4. scripts/50-autoshift.sh adopt
+         The irreversible step. This activates EVERY enabled policy at once,
+         and turning a label back off does not uninstall what it created.
+         Check what is enabled before running it.
+
+    5. scripts/50-autoshift.sh status
 EOF

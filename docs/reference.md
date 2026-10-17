@@ -12,8 +12,8 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `30-verify-maas.sh` | Six-phase platform verification, via the guide's `verify.sh`. |
 | `35-smoke-test.sh` | Real prompt to your model through the gateway. |
 | `40-lightspeed.sh` | Optional. Install OpenShift Lightspeed pointed at your MaaS model. |
+| `45-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
 | `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). |
-| `55-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
 | `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
@@ -26,7 +26,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 00-init.sh          [--dir <path>] [--channel <name>] [--force]
 10-deploy-cluster.sh [--dry-run] [--log-level <level>]
 20-deploy-maas.sh   <any setup-maas.sh flag>
-55-autoshift-values.sh [--name <mc>] [--clusterset <s>] [--replicas N]
+45-autoshift-values.sh [--name <mc>] [--clusterset <s>] [--replicas N]
                     [--instance-type <t>] [--spot] [--stdout] [--force]
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
