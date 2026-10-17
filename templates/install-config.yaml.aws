@@ -13,7 +13,8 @@ compute:
   name: worker
   platform:
     aws:
-      type: m6i.2xlarge
+      # Overridden by AWS_WORKER_TYPE / AWS_WORKER_REPLICAS in cluster.env.
+      type: m6i.4xlarge
       zones:
       - CHANGEME
   replicas: 3
@@ -23,7 +24,18 @@ controlPlane:
   name: master
   platform:
     aws:
-      type: m6i.xlarge
+      # Overridden by AWS_CONTROL_PLANE_TYPE / _REPLICAS in cluster.env.
+      #
+      # NOT m6i.xlarge. 4 vCPU / 16 GiB is the documented control plane
+      # minimum, and Red Hat qualifies it as sufficient only for an etcd
+      # database up to ~250 MiB and low load
+      # (access.redhat.com/articles/7132959). An ACM hub is not low load: on
+      # this stack etcd reached a 545 MB high-water mark, at which point the
+      # API server began timing out, ovnkube-controller crash-looped because
+      # it could not write a node annotation, and nodes went NotReady with no
+      # CNI configuration. None of that presents as "the control plane is too
+      # small".
+      type: m6i.2xlarge
       zones:
       - CHANGEME
   replicas: 3

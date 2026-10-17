@@ -122,14 +122,39 @@ patch_aws() {
 
     subnets_json="$(printf '%s\n' "$subnets_yaml" | yq -c '.platform.aws.vpc.subnets')"
 
+    # Machine sizing comes from cluster.env so it is reviewable in one place
+    # alongside everything else about the cluster, rather than being buried in
+    # the template. The template's own values are the same defaults, so it
+    # still renders sensibly on its own.
+    local cp_type cp_reps wk_type wk_reps
+    cp_type="${AWS_CONTROL_PLANE_TYPE:-m6i.2xlarge}"
+    cp_reps="${AWS_CONTROL_PLANE_REPLICAS:-3}"
+    wk_type="${AWS_WORKER_TYPE:-m6i.4xlarge}"
+    wk_reps="${AWS_WORKER_REPLICAS:-3}"
+
+    for v in "$cp_reps" "$wk_reps"; do
+        case "$v" in ''|*[!0-9]*)
+            echo "Error: replica counts must be integers (got '${v}')." >&2; exit 1 ;;
+        esac
+    done
+    echo "    control plane=${cp_reps} x ${cp_type}   workers=${wk_reps} x ${wk_type}"
+
     yq -y -i \
         --arg region "$region" \
         --arg az "$az" \
         --argjson subnets "$subnets_json" \
+        --arg cptype "$cp_type" \
+        --arg wktype "$wk_type" \
+        --argjson cpreps "$cp_reps" \
+        --argjson wkreps "$wk_reps" \
         '.platform.aws.region = $region
          | .platform.aws.vpc.subnets = $subnets
          | .controlPlane.platform.aws.zones = [$az]
-         | .compute[0].platform.aws.zones = [$az]' \
+         | .controlPlane.platform.aws.type = $cptype
+         | .controlPlane.replicas = $cpreps
+         | .compute[0].platform.aws.zones = [$az]
+         | .compute[0].platform.aws.type = $wktype
+         | .compute[0].replicas = $wkreps' \
         "$OUTPUT_FILE"
 }
 
