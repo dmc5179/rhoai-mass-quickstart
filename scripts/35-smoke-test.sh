@@ -167,8 +167,10 @@ if [ -z "$CONTENT" ]; then
     echo "WARNING: HTTP 200 but an empty completion - check the model pod logs." >&2
 elif grep -qiE 'simulat|lorem ipsum|tiny-gpt2' <<<"${CONTENT}${MODEL}"; then
     echo "NOTE: this looks like the CPU simulator rather than a real model."
-    echo "      If you wanted a GPU model: scripts/15-gpu-node.sh up, set"
-    echo "      MAAS_MODEL in cluster.env, then re-run phase 20."
+    echo "      If you wanted a GPU model: bring up a GPU node with"
+    echo "      scripts/55-autoshift-values.sh --replicas 1 --force and"
+    echo "      scripts/50-autoshift.sh bootstrap, set MAAS_MODEL in"
+    echo "      cluster.env, then re-run phase 20."
 fi
 
 echo "Smoke test passed."

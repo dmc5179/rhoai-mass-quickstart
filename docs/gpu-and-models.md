@@ -11,7 +11,7 @@ anything went wrong.
 
 Two defences, use both:
 
-1. Run `scripts/15-gpu-node.sh up` **before** phase 20.
+1. Bring up a GPU node **before** phase 20 — see below.
 2. Set `MAAS_MODEL` in `cluster.env` instead of leaving it `auto`, so a
    missing GPU becomes a visible failure.
 
@@ -57,10 +57,16 @@ image](https://access.redhat.com/documentation/en-us/red_hat_openshift_ai_self-m
 ## Adding a GPU node
 
 ```bash
-scripts/15-gpu-node.sh up            # on-demand
-scripts/15-gpu-node.sh up --spot     # spot, much cheaper, reclaimable
-scripts/15-gpu-node.sh status
-scripts/15-gpu-node.sh down          # back to 0 replicas
+# GPU nodes come from the gpu-nodes AutoShift policy, not a script.
+scripts/55-autoshift-values.sh --replicas 1 --force          # on-demand
+scripts/55-autoshift-values.sh --replicas 1 --spot --force   # spot, cheaper, reclaimable
+scripts/50-autoshift.sh bootstrap                            # apply
+scripts/50-autoshift.sh status
+
+# Back to zero: regenerate with --replicas 0 and re-apply. The MachineSet
+# stays, costing nothing, so scaling back up is immediate.
+scripts/55-autoshift-values.sh --replicas 0 --force
+scripts/50-autoshift.sh bootstrap
 ```
 
 `up` takes about 25 minutes and does four things, because all four are needed

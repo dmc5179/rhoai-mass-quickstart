@@ -69,7 +69,8 @@ You got the CPU simulator. The guide detects GPUs by reading the
 Empty means no GPU was visible when phase 20 ran. Fix:
 
 ```bash
-scripts/15-gpu-node.sh up
+scripts/55-autoshift-values.sh --replicas 1 --force   # ask for a GPU node
+scripts/50-autoshift.sh bootstrap                     # apply it
 $EDITOR cluster.env          # MAAS_MODEL="granite-tiny-gpu"
 scripts/20-deploy-maas.sh --from-phase 5
 ```
@@ -79,8 +80,8 @@ scripts/20-deploy-maas.sh --from-phase 5
 ## GPU machine set scaled up but no node appears
 
 ```bash
-"$OC" get machines -n openshift-machine-api
-"$OC" get machineset -n openshift-machine-api
+"$OC" get machines.machine.openshift.io -n openshift-machine-api
+"$OC" get machinesets.machine.openshift.io -n openshift-machine-api
 ```
 
 A Machine stuck in `Provisioning` usually means AWS will not give you the
@@ -88,9 +89,12 @@ instance:
 
 - **Quota.** *Running On-Demand G and VT instances* defaults to **0** on new
   accounts. Spot has a separate quota.
-- **Spot capacity.** Unfulfillable requests sit silently. Use
-  `scripts/15-gpu-node.sh up --spot --fallback` to switch to on-demand
-  automatically.
+- **Spot capacity.** Unfulfillable requests sit silently. Spot is requested
+  with `autoshift.io/gpu-nodes-spot: 'true'`, and there is deliberately no
+  automatic fallback to on-demand — the machines simply never appear and
+  `policy-gpu-nodes-test` goes NonCompliant. A silent switch to on-demand
+  would be a surprise on the bill. Set the label back to `'false'` to use
+  on-demand.
 - **Instance type not in your AZ.** The VPC pins one zone:
   ```bash
   aws ec2 describe-instance-type-offerings --location-type availability-zone \
@@ -109,27 +113,34 @@ An organisation-level SCP, not a capacity shortage, and not something you can
 retry around. Seen on Red Hat Demo Platform sandboxes, which permit on-demand
 GPU instances but deny spot.
 
-`scripts/15-gpu-node.sh up --spot --fallback` handles it: it detects the
-denial, scales the spot set back to 0, and switches to on-demand. Once you
-know spot is blocked in an account, drop `--spot` and save the five-minute
-detection wait.
+Nothing detects this for you. Set `autoshift.io/gpu-nodes-spot: 'false'`
+(the default) and re-apply. Once you know spot is blocked in an account,
+leave it off — the failure mode is machines that never appear, with the
+denial visible only on the Machine object.
 
 Confirm on-demand is permitted by checking the machine has no error:
 
 ```bash
-"$OC" get machines -n openshift-machine-api -o json | jq -r '
+"$OC" get machines.machine.openshift.io -n openshift-machine-api -o json | jq -r '
   .items[] | select(.metadata.name|test("-gpu-")) |
   "\(.metadata.name) \(.status.phase) \(.status.errorMessage // "no error")"'
 ```
 
 ## "no matches for kind NodeFeatureDiscovery ... ensure CRDs are installed first"
 
-A CSV reporting `Succeeded` does not mean its CRDs are registered yet.
-`15-gpu-node.sh` now waits for `nodefeaturediscoveries.nfd.openshift.io` and
-`clusterpolicies.nvidia.com` to be established before applying the instances.
+A CSV reporting `Succeeded` does not mean its CRDs are registered yet. The
+`nvidia-gpu-operator` policy expresses this as a dependency:
+`policy-nvidia-gpu-cluster-policy` depends on
+`policy-nvidia-gpu-operator-install`, so the ClusterPolicy is not applied
+until the operator install reports Compliant. A ConfigurationPolicy naming a
+CRD that does not exist yet reports Compliant while doing nothing, which is
+why the dependency rather than a wait is what makes the assertion mean
+anything.
 
-If you hit it on an older copy, just re-run the script — the operators are
-already installed, so it picks up where it left off.
+If the operator install itself never reaches Compliant, check the CSV rather
+than the policy — the policy reports only "the ClusterServiceVersion required
+by the policy was not found", which reads like a catalog problem even when
+the real cause is an OperatorGroup the API server rejected.
 
 ## "could not find any suitable subnets for creating the ELB"
 

@@ -106,8 +106,8 @@ balancer to give the gateway an external IP. No configuration needed.
 
 ## GPUs
 
-`scripts/15-gpu-node.sh` is AWS-only — it scales machine sets, which do not
-exist here. With physical GPUs in your nodes, apply the guide's operator
+The `gpu-nodes` AutoShift policy is AWS-only — it clones a worker MachineSet,
+and machine sets do not exist here. With physical GPUs in your nodes, apply the guide's operator
 manifests directly:
 
 ```bash

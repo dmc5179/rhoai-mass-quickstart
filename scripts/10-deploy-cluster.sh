@@ -196,14 +196,18 @@ else
 fi
 
 # --- 4. GPU machine sets ----------------------------------------------------
-# Created at replica 0, so they cost nothing until scaled up. AWS only: the
-# script patches AWS-specific providerSpec fields (instanceType,
-# spotMarketOptions), which have no direct equivalent on the other platforms.
-if [ "$PLATFORM" = "aws" ]; then
-    "${ROOT}/scripts/add-gpu-machinesets.sh"
-else
-    echo "==> Skipping GPU machine sets (not implemented for ${PLATFORM})"
-fi
+# Not created here any more. The gpu-nodes AutoShift policy owns them, so they
+# arrive with phase 50 rather than phase 10, and are driven by the
+# autoshift.io/gpu-nodes-* labels that scripts/55-autoshift-values.sh renders.
+#
+# This is not just a relocation. The script this replaced addressed MachineSets
+# by their short name, which stops working the moment ACM is installed: ACM
+# brings in the Cluster API CRDs, which serve a second resource also called
+# machinesets, and oc then resolves the ambiguous short name to the empty one.
+# The policy uses an explicit lookup of machine.openshift.io/v1beta1 and is
+# immune. It also inherits the worker's subnet verbatim rather than rebuilding
+# it from the infrastructure ID, which is what makes it work on this
+# pre-existing VPC at all.
 
 cat <<EOF
 

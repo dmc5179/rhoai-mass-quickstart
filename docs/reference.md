@@ -7,16 +7,15 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | Script | What it does |
 |---|---|
 | `00-init.sh` | Fetch `oc`, `kubectl`, `openshift-install-fips` into `bin/`, checksum-verified. Writes `bin/ocp-env.sh`. |
-| `10-deploy-cluster.sh` | Network, install-config, cluster install, GPU machine sets at 0. |
-| `15-gpu-node.sh` | Scale a GPU node up or down, install NFD + NVIDIA operator, wait for `nvidia.com/gpu`. |
+| `10-deploy-cluster.sh` | Network, install-config, cluster install. |
 | `20-deploy-maas.sh` | RHOAI + MaaS + a model, via the guide's `setup-maas.sh`. |
 | `30-verify-maas.sh` | Six-phase platform verification, via the guide's `verify.sh`. |
 | `35-smoke-test.sh` | Real prompt to your model through the gateway. |
 | `40-lightspeed.sh` | Optional. Install OpenShift Lightspeed pointed at your MaaS model. |
 | `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). |
+| `55-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
 | `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
-| `add-gpu-machinesets.sh` | Create the GPU machine sets. Called by phase 10. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
@@ -26,8 +25,9 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 ```
 00-init.sh          [--dir <path>] [--channel <name>] [--force]
 10-deploy-cluster.sh [--dry-run] [--log-level <level>]
-15-gpu-node.sh      {up|down|status} [--spot] [--fallback] [--replicas N]
 20-deploy-maas.sh   <any setup-maas.sh flag>
+55-autoshift-values.sh [--name <mc>] [--clusterset <s>] [--replicas N]
+                    [--instance-type <t>] [--spot] [--stdout] [--force]
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
 40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
@@ -62,7 +62,6 @@ scripts/logs.sh --last     # path of the newest log
 | Prefix | Script |
 |---|---|
 | `deploy-<platform>` | `10-deploy-cluster.sh` |
-| `gpu-node` | `15-gpu-node.sh` |
 | `maas-install` | `20-deploy-maas.sh` |
 | `maas-verify` | `30-verify-maas.sh` |
 | `smoke-test` | `35-smoke-test.sh` |

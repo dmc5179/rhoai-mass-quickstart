@@ -9,10 +9,19 @@ controller to run, and no AI assistant required.
 ```bash
 scripts/00-init.sh             # fetch oc and openshift-install
 scripts/10-deploy-cluster.sh   # network + OpenShift        ~40 min
-scripts/15-gpu-node.sh up      # optional GPU node          ~25 min
 scripts/20-deploy-maas.sh      # RHOAI + MaaS + a model     ~30 min
 scripts/35-smoke-test.sh       # ask the model a question   ~1 min
 scripts/40-lightspeed.sh install  # optional: console assistant  ~10 min
+```
+
+GPU nodes are no longer a script. They come from the `gpu-nodes` AutoShift
+policy in phase 50, driven by the labels `scripts/55-autoshift-values.sh`
+renders:
+
+```bash
+scripts/50-autoshift.sh bootstrap                  # ACM + GitOps + AutoShift
+scripts/55-autoshift-values.sh --replicas 1 --force   # ask for one GPU node
+scripts/50-autoshift.sh adopt                      # hub manages itself
 ```
 
 ---

@@ -107,7 +107,8 @@ The `kubeadmin` password is in `clusters/rhoai/auth/kubeadmin-password`.
 Only if you want a real LLM rather than the CPU simulator.
 
 ```bash
-scripts/15-gpu-node.sh up        # ~25 min
+scripts/55-autoshift-values.sh --replicas 1 --force   # GPU node, ~25 min
+scripts/50-autoshift.sh bootstrap
 ```
 
 Full detail in [gpu-and-models.md](gpu-and-models.md). Do it **before** phase

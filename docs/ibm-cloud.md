@@ -13,7 +13,7 @@ See [prerequisites.md](prerequisites.md) first, including the inotify setting
 |---|---|---|
 | Network | separate CloudFormation stack, outlives the cluster | installer-created, **destroyed with the cluster**, unless you point at an existing VPC |
 | DNS | Route 53 zone, auto-detected | CIS domain zone, **must be set explicitly** |
-| GPU automation | `15-gpu-node.sh`, machine sets, spot | **not implemented** |
+| GPU automation | `gpu-nodes` AutoShift policy, machine sets, spot | **not implemented** — the policy is AWS-only |
 | Park / resume | `cluster-power.sh` | **not implemented** |
 | Teardown | `90-destroy-cluster.sh` | same script; `openshift-install destroy` handles it |
 
