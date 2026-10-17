@@ -143,27 +143,137 @@ else
     echo "==> Policy source: chart default (upstream main)"
 fi
 
-echo "==> Installing Red Hat Advanced Cluster Management"
-"$HELM" upgrade --install advanced-cluster-management advanced-cluster-management
+# Installing ACM through this chart has two sharp edges, both stemming from
+# the MultiClusterHub being created by a post-install hook:
+#
+#  1. helm does not re-run post-install hooks on an upgrade. Once ANY release
+#     record exists - including a failed one - `upgrade --install` reports
+#     success and silently never creates the MultiClusterHub.
+#
+#  2. On a fresh cluster the hook fires before the operator's validating
+#     webhook has endpoints, so it is rejected:
+#       no endpoints available for service "multiclusterhub-operator-webhook"
+#     The chart waits for the multiclusterhubs CRD, but the CRD is registered
+#     by the CSV well before the webhook pod is serving.
+#
+# The invariant worth enforcing is simple: if there is no MultiClusterHub,
+# the hook has not run, whatever the release record says. So any pre-existing
+# release without an MCH is removed and installed cleanly.
+ACM_NS="open-cluster-management"
 
-echo "    Waiting for the MultiClusterHub to be Running (up to 20m)"
-"$OC" wait --for=create multiclusterhub -A --timeout=10m >/dev/null 2>&1 || true
-if ! "$OC" wait --for=jsonpath='{.status.phase}'=Running multiclusterhub --all -A --timeout=20m 2>/dev/null; then
+acm_mch_exists() { "$OC" get multiclusterhub multiclusterhub -n "$ACM_NS" >/dev/null 2>&1; }
+
+acm_wait_ns_gone() {
+    local deadline=$(( $(date +%s) + 300 ))
+    while "$OC" get namespace "$ACM_NS" >/dev/null 2>&1; do
+        [ "$(date +%s)" -lt "$deadline" ] || {
+            echo "Error: the ${ACM_NS} namespace is stuck Terminating." >&2
+            return 1
+        }
+        sleep 5
+    done
+}
+
+# Install with --no-hooks, then create the MultiClusterHub ourselves once the
+# webhook is actually serving. This sidesteps both edges instead of retrying
+# around them:
+#
+#   - no failed release record, so nothing later degrades into an upgrade that
+#     silently skips the hook
+#   - the MCH is created strictly after the webhook has endpoints
+#
+# The MCH is rendered from the chart's own template rather than written out
+# here, so the chart stays the source of truth for its content. Note
+# ignoreHelmHooks does NOT help: it gates only the CRD-reader and CRD-wait
+# hooks, not acm-mch.yaml.
+acm_render_mch() {
+    "$HELM" template advanced-cluster-management advanced-cluster-management \
+        --show-only templates/acm-mch.yaml 2>/dev/null
+}
+
+acm_wait_webhook() {
+    local deadline=$(( $(date +%s) + 600 ))
+    until [ -n "$("$OC" get endpoints multiclusterhub-operator-webhook -n "$ACM_NS" \
+                  -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || {
+            echo "Error: the ACM webhook never got endpoints." >&2
+            echo "       Check: \"\$OC\" get pods -n ${ACM_NS}" >&2
+            return 1
+        }
+        sleep 10
+    done
+}
+
+install_acm() {
+    if acm_mch_exists; then
+        echo "==> MultiClusterHub already exists; leaving it alone"
+        return 0
+    fi
+
+    echo "    Installing the operator (hooks deferred)"
+    "$HELM" upgrade --install advanced-cluster-management advanced-cluster-management --no-hooks || return 1
+
+    echo "    Waiting for the operator CSV to succeed"
+    "$OC" wait --for=create "namespace/${ACM_NS}" --timeout=5m >/dev/null 2>&1 || true
+    local deadline=$(( $(date +%s) + 900 ))
+    until "$OC" get csv -n "$ACM_NS" --no-headers 2>/dev/null | grep -q 'advanced-cluster-management.*Succeeded'; do
+        [ "$(date +%s)" -lt "$deadline" ] || {
+            echo "Error: the ACM operator CSV never reached Succeeded." >&2
+            "$OC" get csv -n "$ACM_NS" >&2 2>/dev/null || true
+            return 1
+        }
+        sleep 10
+    done
+
+    echo "    Waiting for the validating webhook to serve"
+    acm_wait_webhook || return 1
+
+    echo "    Creating the MultiClusterHub"
+    acm_render_mch | "$OC" apply -f - || return 1
+}
+
+echo "==> Installing Red Hat Advanced Cluster Management"
+install_acm || exit 1
+
+# Wait by name in its own namespace. An --all/-A form would hit the trap that
+# --for=jsonpath fails instantly with "no matching resources found" when
+# nothing matches yet, rather than waiting for it to appear.
+echo "    Waiting for the MultiClusterHub to be created (up to 10m)"
+if ! "$OC" wait --for=create "multiclusterhub/multiclusterhub" -n "$ACM_NS" --timeout=10m >/dev/null 2>&1; then
+    echo "Error: the MultiClusterHub was never created." >&2
+    echo "       The chart creates it from a post-install hook; if the release" >&2
+    echo "       shows as an upgrade, that hook did not run." >&2
+    echo "       Check: \"\$HELM\" list -a -A  and  \"\$OC\" get multiclusterhub -A" >&2
+    exit 1
+fi
+echo "    Waiting for it to reach Running (up to 20m)"
+if ! "$OC" wait --for=jsonpath='{.status.phase}'=Running \
+        "multiclusterhub/multiclusterhub" -n "$ACM_NS" --timeout=20m; then
     echo "Error: the MultiClusterHub did not reach Running." >&2
-    "$OC" get multiclusterhub -A >&2 2>/dev/null || true
+    "$OC" get multiclusterhub -n "$ACM_NS" >&2 2>/dev/null || true
+    "$OC" get pods -n "$ACM_NS" --no-headers 2>/dev/null | grep -v Running | head >&2 || true
     exit 1
 fi
 
 echo "==> Installing OpenShift GitOps"
 "$HELM" upgrade --install openshift-gitops openshift-gitops -f policies/stable/openshift-gitops/values.yaml
 
+# Do not assume the instance name. AutoShift's ArgoCD is called infra-gitops,
+# so the server deployment is infra-gitops-server, not openshift-gitops-server.
+# Select on the labels the operator stamps instead, which hold whatever the
+# instance is called.
 echo "    Waiting for the ArgoCD server (up to 10m)"
-"$OC" wait --for=create deployment/openshift-gitops-server -n "$GITOPS_NS" --timeout=10m >/dev/null 2>&1 || true
-"$OC" wait --for=condition=Available deployment/openshift-gitops-server -n "$GITOPS_NS" --timeout=10m >/dev/null || {
+"$OC" wait --for=create deployment \
+    -l 'app.kubernetes.io/part-of=argocd,app.kubernetes.io/component=server' \
+    -n "$GITOPS_NS" --timeout=10m >/dev/null 2>&1 || true
+if ! "$OC" wait --for=condition=Available deployment \
+        -l 'app.kubernetes.io/part-of=argocd,app.kubernetes.io/component=server' \
+        -n "$GITOPS_NS" --timeout=10m >/dev/null 2>&1; then
     echo "Error: the ArgoCD server did not become Available." >&2
-    "$OC" get pods -n "$GITOPS_NS" >&2 2>/dev/null || true
+    "$OC" get argocd,deploy -n "$GITOPS_NS" >&2 2>/dev/null || true
     exit 1
-}
+fi
+echo "    ArgoCD instance: $("$OC" get argocd -n "$GITOPS_NS" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
 
 echo "==> Installing AutoShift"
 HELM_ARGS=(upgrade --install autoshift ./autoshift -n "$GITOPS_NS")
