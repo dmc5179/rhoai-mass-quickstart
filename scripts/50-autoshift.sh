@@ -7,6 +7,7 @@
 # Usage: scripts/50-autoshift.sh bootstrap   # ACM, GitOps, then AutoShift
 #        scripts/50-autoshift.sh adopt       # hub manages itself
 #        scripts/50-autoshift.sh status
+#        scripts/50-autoshift.sh refresh    # pull policy changes from Git now
 #        scripts/50-autoshift.sh uninstall
 #
 # Reads AUTOSHIFT_* from cluster.env. This drives an AutoShift checkout that
@@ -30,8 +31,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 case "$ACTION" in
-    bootstrap|adopt|status|uninstall) ;;
-    *) echo "Usage: scripts/50-autoshift.sh {bootstrap|adopt|status|uninstall}" >&2; exit 2 ;;
+    bootstrap|adopt|status|refresh|uninstall) ;;
+    *) echo "Usage: scripts/50-autoshift.sh {bootstrap|adopt|status|refresh|uninstall}" >&2; exit 2 ;;
 esac
 
 . "${ROOT}/cluster.env"
@@ -95,6 +96,39 @@ if [ "$ACTION" = "status" ]; then
     echo "==> Policies not Compliant"
     "$OC" get policy -A --no-headers 2>/dev/null | awk '$NF!="Compliant" && NF {print "    "$1"/"$2" "$NF}' || true
     set -e
+    exit 0
+fi
+
+# --- refresh ----------------------------------------------------------------
+# ArgoCD polls Git on its own schedule, so a policy change can sit for minutes
+# after being pushed. This asks for it now.
+#
+# Note the fully qualified applications.argoproj.io. ACM brings in app.k8s.io,
+# which serves a second resource with the same short name, so `oc annotate
+# application ...` annotates the wrong kind, reports success, and does
+# nothing. The same shadowing applies to machine and machineset.
+#
+# A refresh is enough on its own: AutoShift's Applications are created with
+# automated sync and selfHeal, so once ArgoCD re-reads Git and sees drift it
+# applies the change without being asked to sync. ArgoCD removes the
+# annotation when it has processed it, which is how you can tell it landed.
+if [ "$ACTION" = "refresh" ]; then
+    mapfile -t apps < <("$OC" get applications.argoproj.io -n "$GITOPS_NS" -o name 2>/dev/null)
+    [ "${#apps[@]}" -gt 0 ] || { echo "No ArgoCD Applications in ${GITOPS_NS}. Run bootstrap first." >&2; exit 1; }
+    echo "==> Refreshing ${#apps[@]} Application(s)"
+    for a in "${apps[@]}"; do
+        "$OC" annotate "$a" -n "$GITOPS_NS" argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 \
+            && echo "    ${a#application.argoproj.io/}" \
+            || echo "    ${a#application.argoproj.io/}  (failed)" >&2
+    done
+    cat <<EOF
+
+Refresh requested. Policies come from Git, so anything not pushed will not
+arrive no matter how often this is run. Watch with:
+
+    scripts/50-autoshift.sh status
+    scripts/checkup.sh
+EOF
     exit 0
 fi
 

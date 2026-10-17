@@ -13,7 +13,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `35-smoke-test.sh` | Real prompt to your model through the gateway. |
 | `40-lightspeed.sh` | Optional. Install OpenShift Lightspeed pointed at your MaaS model. |
 | `45-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
-| `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). |
+| `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). `refresh` pulls policy changes from Git immediately. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
 | `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
