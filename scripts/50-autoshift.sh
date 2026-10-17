@@ -279,7 +279,14 @@ echo "==> Installing AutoShift"
 HELM_ARGS=(upgrade --install autoshift ./autoshift -n "$GITOPS_NS")
 [ -n "$GIT_REPO" ]   && HELM_ARGS+=(--set "autoshiftGitRepo=${GIT_REPO}")
 [ -n "$GIT_BRANCH" ] && HELM_ARGS+=(--set "autoshiftGitBranchTag=${GIT_BRANCH}")
-for f in autoshift/values/global.yaml "autoshift/values/clustersets/${CLUSTERSET}.yaml"; do
+# Order matters: cluster overrides clusterset overrides global. The per-cluster
+# file is keyed on the ACM ManagedCluster name, which for a hub managing itself
+# is 'local-cluster' rather than $CLUSTER_NAME. Generate it with
+# scripts/55-autoshift-values.sh; it is skipped silently when absent.
+CLUSTER_VALUES="${AUTOSHIFT_CLUSTER_VALUES:-local-cluster}"
+for f in autoshift/values/global.yaml \
+         "autoshift/values/clustersets/${CLUSTERSET}.yaml" \
+         "autoshift/values/clusters/${CLUSTER_VALUES}.yaml"; do
     [ -f "$f" ] && HELM_ARGS+=(-f "$f")
 done
 [ -n "${AUTOSHIFT_EXTRA_VALUES:-}" ] && HELM_ARGS+=(-f "$AUTOSHIFT_EXTRA_VALUES")
