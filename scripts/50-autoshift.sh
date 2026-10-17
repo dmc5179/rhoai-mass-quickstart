@@ -59,6 +59,22 @@ export KUBECONFIG
 GITOPS_NS="openshift-gitops"
 CLUSTERSET="${AUTOSHIFT_CLUSTERSET:-hub}"
 
+# Where the ACM and GitOps helm RELEASE RECORDS live. This is bookkeeping only -
+# both charts create their own operator namespaces - but it has to be pinned.
+# Left unpinned, helm falls back to whatever namespace the kubeconfig context
+# happens to point at, so the same command finds the release one day and
+# decides to do a fresh install the next, which then fails on the namespaces
+# the existing release already owns:
+#
+#   Namespace "openshift-gitops-operator" ... cannot be imported into the
+#   current release: ... must equal "openshift-machine-api": current value is
+#   "default"
+#
+# 'default' is where an unpinned run from a fresh kubeconfig would have put
+# them, so it is the compatible choice rather than a tasteful one. Override
+# only if your releases are already somewhere else.
+OPERATOR_RELEASE_NS="${AUTOSHIFT_OPERATOR_RELEASE_NS:-default}"
+
 # --- status -----------------------------------------------------------------
 if [ "$ACTION" = "status" ]; then
     # Every probe here is allowed to fail: before ACM and GitOps are installed
@@ -188,7 +204,7 @@ acm_wait_ns_gone() {
 # hooks, not acm-mch.yaml.
 acm_render_mch() {
     "$HELM" template advanced-cluster-management advanced-cluster-management \
-        --show-only templates/acm-mch.yaml 2>/dev/null
+        -n "$OPERATOR_RELEASE_NS" --show-only templates/acm-mch.yaml 2>/dev/null
 }
 
 acm_wait_webhook() {
@@ -211,7 +227,8 @@ install_acm() {
     fi
 
     echo "    Installing the operator (hooks deferred)"
-    "$HELM" upgrade --install advanced-cluster-management advanced-cluster-management --no-hooks || return 1
+    "$HELM" upgrade --install advanced-cluster-management advanced-cluster-management \
+        -n "$OPERATOR_RELEASE_NS" --no-hooks || return 1
 
     echo "    Waiting for the operator CSV to succeed"
     "$OC" wait --for=create "namespace/${ACM_NS}" --timeout=5m >/dev/null 2>&1 || true
@@ -256,7 +273,8 @@ if ! "$OC" wait --for=jsonpath='{.status.phase}'=Running \
 fi
 
 echo "==> Installing OpenShift GitOps"
-"$HELM" upgrade --install openshift-gitops openshift-gitops -f policies/stable/openshift-gitops/values.yaml
+"$HELM" upgrade --install openshift-gitops openshift-gitops \
+    -n "$OPERATOR_RELEASE_NS" -f policies/stable/openshift-gitops/values.yaml
 
 # Do not assume the instance name. AutoShift's ArgoCD is called infra-gitops,
 # so the server deployment is infra-gitops-server, not openshift-gitops-server.
