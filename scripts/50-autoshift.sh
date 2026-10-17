@@ -39,7 +39,10 @@ esac
 . "${ROOT}/scripts/lib-logging.sh"
 start_logging "autoshift" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
-command -v helm >/dev/null || { echo "Error: 'helm' is not installed." >&2; exit 1; }
+# Prefer the helm 00-init.sh fetched, for the same reason we address oc by
+# explicit path: no collision with whatever is on PATH.
+HELM="${HELM:-$(command -v helm || true)}"
+[ -x "$HELM" ] || { echo "Error: helm not found. Run scripts/00-init.sh." >&2; exit 1; }
 
 KUBECONFIG="${CLUSTER_DIR}/auth/kubeconfig"
 [ -f "$KUBECONFIG" ] || { echo "Error: no kubeconfig at ${KUBECONFIG}." >&2; exit 1; }
@@ -58,25 +61,31 @@ CLUSTERSET="${AUTOSHIFT_CLUSTERSET:-hub}"
 
 # --- status -----------------------------------------------------------------
 if [ "$ACTION" = "status" ]; then
+    # Every probe here is allowed to fail: before ACM and GitOps are installed
+    # their CRDs do not exist, and with set -e + pipefail a missing CRD would
+    # abort the report halfway through rather than saying "none".
+    set +e
     echo "==> Operators"
     "$OC" get csv -A --no-headers 2>/dev/null |
         grep -Ei 'advanced-cluster-management|openshift-gitops' | awk '{print "    "$2" "$NF}' || echo "    none"
     echo "==> AutoShift release"
-    helm list -n "$GITOPS_NS" 2>/dev/null | grep -i autoshift || echo "    not installed"
-    echo "==> ApplicationSet / Applications"
-    "$OC" get applicationset -n "$GITOPS_NS" --no-headers 2>/dev/null | awk '{print "    "$1}' || echo "    none"
-    "$OC" get applications.argoproj.io -n "$GITOPS_NS" --no-headers 2>/dev/null | wc -l | xargs echo "    applications:"
-    echo "==> ManagedClusters and their clusterset"
-    "$OC" get managedcluster -o custom-columns='NAME:.metadata.name,SET:.metadata.labels.cluster\.open-cluster-management\.io/clusterset' --no-headers 2>/dev/null || echo "    none"
+    "$HELM" list -n "$GITOPS_NS" 2>/dev/null | grep -i autoshift || echo "    not installed"
+    echo "==> ApplicationSet"
+    "$OC" get applicationset -n "$GITOPS_NS" --no-headers 2>/dev/null | awk '{print "    "$1}' || true
+    echo "==> Applications"
+    "$OC" get applications.argoproj.io -n "$GITOPS_NS" --no-headers 2>/dev/null | awk '{print "    "$1" "$NF}' || true
+    echo "==> ManagedClusters"
+    "$OC" get managedcluster -o custom-columns='NAME:.metadata.name,SET:.metadata.labels.cluster\.open-cluster-management\.io/clusterset' --no-headers 2>/dev/null | sed 's/^/    /' || true
     echo "==> Policies not Compliant"
     "$OC" get policy -A --no-headers 2>/dev/null | awk '$NF!="Compliant" && NF {print "    "$1"/"$2" "$NF}' || true
+    set -e
     exit 0
 fi
 
 # --- uninstall --------------------------------------------------------------
 if [ "$ACTION" = "uninstall" ]; then
     echo "==> Removing the AutoShift release (policies stop being reconciled)"
-    helm uninstall autoshift -n "$GITOPS_NS" 2>/dev/null || echo "    not installed"
+    "$HELM" uninstall autoshift -n "$GITOPS_NS" 2>/dev/null || echo "    not installed"
     cat <<EOF
 
 AutoShift is gone. What it deployed is NOT: removing the ApplicationSet stops
@@ -135,7 +144,7 @@ else
 fi
 
 echo "==> Installing Red Hat Advanced Cluster Management"
-helm upgrade --install advanced-cluster-management advanced-cluster-management
+"$HELM" upgrade --install advanced-cluster-management advanced-cluster-management
 
 echo "    Waiting for the MultiClusterHub to be Running (up to 20m)"
 "$OC" wait --for=create multiclusterhub -A --timeout=10m >/dev/null 2>&1 || true
@@ -146,7 +155,7 @@ if ! "$OC" wait --for=jsonpath='{.status.phase}'=Running multiclusterhub --all -
 fi
 
 echo "==> Installing OpenShift GitOps"
-helm upgrade --install openshift-gitops openshift-gitops -f policies/stable/openshift-gitops/values.yaml
+"$HELM" upgrade --install openshift-gitops openshift-gitops -f policies/stable/openshift-gitops/values.yaml
 
 echo "    Waiting for the ArgoCD server (up to 10m)"
 "$OC" wait --for=create deployment/openshift-gitops-server -n "$GITOPS_NS" --timeout=10m >/dev/null 2>&1 || true
@@ -164,7 +173,7 @@ for f in autoshift/values/global.yaml "autoshift/values/clustersets/${CLUSTERSET
     [ -f "$f" ] && HELM_ARGS+=(-f "$f")
 done
 [ -n "${AUTOSHIFT_EXTRA_VALUES:-}" ] && HELM_ARGS+=(-f "$AUTOSHIFT_EXTRA_VALUES")
-helm "${HELM_ARGS[@]}"
+"$HELM" "${HELM_ARGS[@]}"
 
 cat <<EOF
 

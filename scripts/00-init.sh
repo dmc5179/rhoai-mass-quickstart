@@ -10,6 +10,12 @@
 #   --dir <path>      Where to place the binaries (default: <repo>/bin)
 #   --channel <name>  Mirror channel to pull from (default: stable-4.22)
 #   --force           Re-download even if the binaries are already present
+#   --skip-helm       Do not fetch helm
+#
+# Red Hat publishes helm on the same mirror, so it is fetched here too - the
+# AutoShift charts in phase 50 need it. There is no argocd CLI on the mirror;
+# OpenShift GitOps serves its own through a ConsoleCLIDownload once installed,
+# so phase 50 fetches that from the cluster instead.
 #
 # PATH is deliberately left alone. The binaries are addressed by explicit path,
 # via the generated bin/ocp-env.sh:
@@ -24,17 +30,20 @@
 set -euo pipefail
 
 MIRROR_BASE="https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
+HELM_BASE="https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/helm/latest"
 CHANNEL="${OCP_CHANNEL:-stable-4.22}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${ROOT}/bin"
 FORCE=0
+WANT_HELM=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dir)     BIN_DIR="$(cd "$2" 2>/dev/null && pwd || echo "$2")"; shift 2 ;;
-        --channel) CHANNEL="$2"; shift 2 ;;
-        --force)   FORCE=1; shift ;;
-        -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --dir)       BIN_DIR="$(cd "$2" 2>/dev/null && pwd || echo "$2")"; shift 2 ;;
+        --channel)   CHANNEL="$2"; shift 2 ;;
+        --force)     FORCE=1; shift ;;
+        --skip-helm) WANT_HELM=0; shift ;;
+        -h|--help)   sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "00-init.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -84,10 +93,47 @@ OCP_VERSION="${VERSION:-unknown}"
 OC="\${OCP_BIN_DIR}/oc"
 KUBECTL="\${OCP_BIN_DIR}/kubectl"
 OPENSHIFT_INSTALL="\${OCP_BIN_DIR}/${INSTALLER_BIN}"
-export OCP_BIN_DIR OCP_VERSION OC KUBECTL OPENSHIFT_INSTALL
+HELM="\${OCP_BIN_DIR}/helm"
+export OCP_BIN_DIR OCP_VERSION OC KUBECTL OPENSHIFT_INSTALL HELM
 EOF
     echo "==> Wrote ${BIN_DIR}/ocp-env.sh"
 }
+
+# --- helm -------------------------------------------------------------------
+# Red Hat ships its own helm build; phase 50 and AutoShift's charts need it.
+# Unlike the OCP clients this is a bare binary rather than a tarball, under a
+# different path, with its own checksum manifest.
+fetch_helm() {
+    local want="helm-linux-amd64"
+    if [ "$FORCE" -eq 0 ] && [ -x "${BIN_DIR}/helm" ]; then
+        echo "==> helm already present ($("${BIN_DIR}/helm" version --short 2>/dev/null || echo unknown))"
+        return 0
+    fi
+    echo "==> Downloading helm"
+    curl -fSL --retry 3 --retry-delay 2 -o "${WORK}/${want}" "${HELM_BASE}/${want}"
+    curl -fsSL -o "${WORK}/helm-sha256sum.txt" "${HELM_BASE}/sha256sum.txt"
+
+    echo "    Verifying sha256"
+    local expected actual
+    expected="$(awk -v f="$want" '$2 == f {print $1}' "${WORK}/helm-sha256sum.txt")"
+    if [ -z "$expected" ]; then
+        echo "00-init.sh: ${want} has no entry in the helm sha256sum.txt" >&2
+        exit 1
+    fi
+    actual="$(sha256sum "${WORK}/${want}" | awk '{print $1}')"
+    if [ "$expected" != "$actual" ]; then
+        echo "00-init.sh: checksum mismatch for ${want}" >&2
+        echo "  expected: ${expected}" >&2
+        echo "  actual:   ${actual}" >&2
+        exit 1
+    fi
+    install -m 0755 "${WORK}/${want}" "${BIN_DIR}/helm"
+    echo "==> Installed ${BIN_DIR}/helm ($("${BIN_DIR}/helm" version --short 2>/dev/null || echo unknown))"
+}
+
+# helm is independent of the OCP client version check below, which exits
+# early when oc and the installer are already current.
+[ "$WANT_HELM" -eq 1 ] && fetch_helm
 
 # Decide whether there is anything to download.
 if [ "$FORCE" -eq 0 ] \
@@ -142,6 +188,8 @@ if [ -n "$missing" ]; then
     echo "00-init.sh: could not find these binaries in the archives:${missing}" >&2
     exit 1
 fi
+
+
 
 write_env_file
 
