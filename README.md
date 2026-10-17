@@ -49,6 +49,9 @@ start-to-finish page.
   nodes, and OCI modelcars
 - [docs/verifying.md](docs/verifying.md) — proving it works
 - [docs/operations.md](docs/operations.md) — parking, costs, teardown
+- [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
+  for an ACM hub, why `adopt` is the irreversible step, and the failures that
+  do not say what they are
 - [docs/troubleshooting.md](docs/troubleshooting.md) — things that have
   actually gone wrong here
 - [docs/reference.md](docs/reference.md) — every script and every setting
