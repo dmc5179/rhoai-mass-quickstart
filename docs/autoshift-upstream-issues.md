@@ -4,10 +4,16 @@ Found while adding the RHOAI MaaS policies on the `rhoai-maas` branch. Each is
 reproducible from a clean clone and verified against the source, not inferred.
 Ordered by how early a new contributor hits them.
 
-Issue 1 already has a fix committed and can go straight up as a PR. Issues 2–5
-are all in the two scaffolders, and all share a shape: the generator produces a
-directory that the repository's own validators then reject, so the first signal
-is a failing `make test` rather than anything at generation time.
+**Status:** issues 1–5 are filed as
+[#276](https://github.com/auto-shift/autoshiftv2/issues/276)–[#280](https://github.com/auto-shift/autoshiftv2/issues/280).
+Issues 6–9 are filed as
+[#281](https://github.com/auto-shift/autoshiftv2/issues/281)–
+[#285](https://github.com/auto-shift/autoshiftv2/issues/285).
+**Issues 10–12 below are NOT filed yet.**
+
+Issues 2–5 are all in the two scaffolders, and all share a shape: the generator
+produces a directory that the repository's own validators then reject, so the
+first signal is a failing `make test` rather than anything at generation time.
 
 ---
 
@@ -151,6 +157,132 @@ but the generator that should implement that is the one that does not.
 the operator generator. Separately, consider having the ratchet report only
 directories added since the baseline — the current message buries the two
 relevant paths in a list of 30.
+
+---
+
+# Not yet filed
+
+Three defects in the GPU path, all found on a live OpenShift 4.22 cluster
+rather than by reading source. They share a shape worth stating once: **each
+leaves a cluster that looks healthy and reports Compliant while doing
+nothing.** No policy fails, no operator reports an error, and the only visible
+symptom is the absence of something.
+
+Taken together they mean the GPU path could not have worked on any cluster.
+Fixing one only exposes the next.
+
+## 10. NVIDIA ClusterPolicy sets fields the installed CRD does not define
+
+**Type:** bug · **File:** `policies/certified/nvidia-gpu-operator/manifests/cluster-policy/cluster-policy.yaml` · **Fix ready:** yes
+
+The manifest sets five fields that do not exist in the ClusterPolicy CRD
+shipped by `gpu-operator-certified` v25.3 — the channel this policy's own
+`manifests/operator-install/kustomization.yaml` defaults to. The API server
+rejects the whole object on the first unknown field:
+
+```
+ClusterPolicy in version "v1" cannot be handled as a ClusterPolicy:
+strict decoding error: unknown field "spec.cdi.nriPluginEnabled",
+unknown field "spec.driver.licensingConfig.secretName",
+unknown field "spec.kataSandboxDevicePlugin", unknown field "spec.mps",
+unknown field "spec.sandboxWorkloads.mode"
+```
+
+The policy surfaces this as:
+
+```
+clusterpolicies [gpu-cluster-policy] is missing, and cannot be created
+```
+
+which reads as an ordering or permissions problem rather than a schema
+mismatch against the operator version the policy just installed.
+
+All five fields were inert: two were set to their defaults, one sat under
+`sandboxWorkloads.enabled: false`, and `mps` and `kataSandboxDevicePlugin`
+have no equivalent in the installed CRD at all. Removing them changes no
+behaviour.
+
+**Reproduce:** enable `nvidia-gpu-operator` on any cluster and look for the
+ClusterPolicy. Verified with a server-side dry run on 4.22 against v25.3.4.
+
+**Suggested fix:** remove the five fields, or pin a channel whose CRD defines
+them. Worth a check that the manifest and the default channel are tested
+together, since nothing currently catches the pair drifting apart.
+
+## 11. NFD labels PCI devices by class, so the GPU operator never sees a GPU node
+
+**Type:** bug · **File:** `policies/stable/node-feature-discovery/manifests/node-feature-discovery-instance.yaml` · **Fix ready:** yes
+
+The NodeFeatureDiscovery instance sets:
+
+```yaml
+        pci:
+          deviceLabelFields:
+            - "class"
+```
+
+That produces `feature.node.kubernetes.io/pci-0300.present` and
+`pci-0302.present`. The NVIDIA GPU operator gates every one of its operands on
+`feature.node.kubernetes.io/pci-10de.present`, where `10de` is NVIDIA's PCI
+vendor ID, and class labelling never produces it.
+
+The result is a GPU operator that installs cleanly, reports no error, and
+creates no daemonsets at all — no driver, no container toolkit, no device
+plugin. The node is Ready, the MachineSet is satisfied, the operator pod is
+Running, and the node advertises no `nvidia.com/gpu`.
+
+Red Hat documents `"vendor"` for exactly this
+([solution 7128119](https://access.redhat.com/solutions/7128119)).
+
+This is the more serious of the two, because it spans policies: the
+`node-feature-discovery` policy makes the `nvidia-gpu-operator` policy
+unusable, and the two are shipped together in the same repository.
+
+**Reproduce:** enable both policies on a cluster with an NVIDIA GPU node.
+Observed with 67 NFD labels present and `pci-10de.present` absent.
+
+**Suggested fix:** set `deviceLabelFields: ["vendor"]`. Note the same Red Hat
+solution warns against adding `"device"` alongside it — that switches the
+label to `pci-10de-<deviceid>.present`, which terminates an in-flight driver
+rollout and zeroes `nvidia.com/gpu`. A `NodeFeatureRule` is the supported way
+to get device IDs.
+
+## 12. Adopting a cluster activates every enabled policy at once, irreversibly
+
+**Type:** enhancement · **Fix ready:** no
+
+Adding a cluster to a clusterset activates every policy enabled in that
+clusterset's values file simultaneously. The shipped `hub.yaml` has 59 labels
+set to `true`, so adoption installs ACS, AAP, Quay, GitLab, compliance, the
+full logging and tracing stack, service mesh, dev-hub, dev-spaces and
+pipelines in parallel.
+
+On a three-worker cluster that produced 99% of allocatable CPU requested on
+every worker, roughly 270 running pods, and an etcd database at a 545 MB
+high-water mark against a 4 vCPU / 16 GiB control plane — whose
+[documented baseline](https://access.redhat.com/articles/7132959) covers "up
+to approximately 250 MiB and low load".
+
+The cluster then failed in a way that named none of this: API server
+timeouts, a crash-looping `ovnkube-controller` unable to write a node
+annotation, nodes NotReady reporting no CNI configuration, and a stalled
+MachineConfig roll.
+
+Because policies use `pruneObjectBehavior: None`, **this cannot be undone by
+editing values.** Setting a label back to `false` stops reconciliation without
+uninstalling the operator, its namespace, its CRDs or its webhooks. One
+orphaned validating webhook whose pods could no longer be scheduled failed
+closed and blocked `oc exec` cluster-wide. The cluster was rebuilt; repairing
+it by hand was judged slower and less certain.
+
+**Suggested fix:** no strong opinion on the mechanism, but some combination of:
+ship a smaller default `hub.yaml`; have `adopt` print what it is about to
+activate and require confirmation; document that adoption is effectively
+one-way; or support staged activation so capability can be added in batches.
+
+The underlying behaviour is reasonable. What is missing is that nothing warns
+the operator of the cluster that a single label change is about to install
+twenty operators, and that there is no path back.
 
 ---
 
