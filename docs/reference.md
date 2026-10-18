@@ -19,6 +19,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
+| `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
