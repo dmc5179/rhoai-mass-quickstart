@@ -5,6 +5,14 @@ The proven path. Start to finish is roughly 90 minutes, most of it waiting.
 Before you begin, work through [prerequisites.md](prerequisites.md) — in
 particular the inotify setting and the Route 53 hosted zone.
 
+## 0. Get an account
+
+If you do not already have an AWS account to build in, order an **AWS Blank
+Open Environment** from [demo.redhat.com](https://demo.redhat.com). It comes
+with admin credentials and a Route 53 public hosted zone, which is what the
+next step needs. Everything below works the same on any admin-level AWS
+account.
+
 ## 1. Configure
 
 ```bash
@@ -55,16 +63,19 @@ scripts/10-deploy-cluster.sh --dry-run   # check wiring, create nothing
 scripts/10-deploy-cluster.sh
 ```
 
-Four steps, ~40 minutes:
+Three steps, ~40 minutes:
 
-1. **VPC** — creates the `rhoai-vpc` CloudFormation stack, or reuses it if
-   present. Single AZ: one public and one private subnet, an internet
+1. **VPC** — creates the `rhoai-vpc` CloudFormation stack from
+   [`../cloudformation/01_vpc.yaml`](../cloudformation/01_vpc.yaml), or reuses
+   it if present. Single AZ: one public and one private subnet, an internet
    gateway, one NAT gateway, and an S3 endpoint.
 2. **install-config** — rendered from
    `templates/install-config.yaml.aws` plus the stack's outputs.
 3. **install** — `openshift-install create cluster`.
-4. **GPU machine sets** — on-demand and spot, both at **0 replicas**, so they
-   cost nothing until you want one.
+
+No GPU machine sets. Phase 10 used to create an on-demand and a spot set at
+0 replicas; the `gpu-nodes` AutoShift policy owns them now, driven by the
+labels `scripts/45-autoshift-values.sh` renders. See step 5 below.
 
 Everything is tee'd to `logs/deploy-aws-<timestamp>.log` at debug level. The
 path prints first, so you can follow or share it even if the run hangs.

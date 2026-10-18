@@ -98,14 +98,23 @@ A GPU node is extra and separate. See [gpu-and-models.md](gpu-and-models.md).
   ```bash
   cp secrets/aws.env.example secrets/aws.env && $EDITOR secrets/aws.env
   ```
+  The quickest way to get one is an **AWS Blank Open Environment** from
+  [Red Hat Demo Platform](https://demo.redhat.com). It arrives with admin
+  keys and a Route 53 hosted zone already set up, which covers both this
+  requirement and the next one. Order it before you need it: these
+  environments have a fixed lifetime, and extending one is easier than
+  rebuilding into a fresh account.
 - **A public Route 53 hosted zone in that account.** The installer creates
   cluster DNS inside it. With none, phase 10 stops immediately with an
-  explicit error rather than part-building anything. Red Hat Demo Platform
-  environments come with one; otherwise register a domain and create the zone.
-  Leave `BASE_DOMAIN` empty to auto-detect it — set it explicitly only if the
+  explicit error rather than part-building anything. An RHDP open environment
+  comes with one; otherwise register a domain and create the zone. Leave
+  `BASE_DOMAIN` empty to auto-detect it — set it explicitly only if the
   account has more than one.
 - For GPU: quota for *Running On-Demand G and VT instances*, which defaults to
   **0** on new accounts. Request an increase early; approval can take days.
+  Note this does not carry over — a replacement open environment is a
+  different AWS account, so the quota is back to 0 and the request starts
+  again. Worth factoring into when you let one expire.
 
 ### IBM Cloud
 

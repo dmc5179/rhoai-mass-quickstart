@@ -8,7 +8,7 @@ controller to run, and no AI assistant required.
 
 ```bash
 scripts/00-init.sh             # fetch oc and openshift-install
-scripts/10-deploy-cluster.sh   # network + OpenShift        ~40 min
+scripts/10-deploy-cluster.sh   # CloudFormation VPC, then OpenShift  ~40 min
 scripts/20-deploy-maas.sh      # RHOAI + MaaS + a model     ~30 min
 scripts/35-smoke-test.sh       # ask the model a question   ~1 min
 scripts/40-lightspeed.sh install  # optional: console assistant  ~10 min
@@ -49,7 +49,23 @@ without uninstalling anything. See
 
 ## Start here
 
-**1. Pick your platform.** Set `PLATFORM` in `cluster.env`.
+**1. Get an AWS account.** On Red Hat Demo Platform, order an **AWS Blank
+Open Environment** from [demo.redhat.com](https://demo.redhat.com). It gives
+you an account with admin credentials and a Route 53 public hosted zone
+already in place, which is the one prerequisite phase 10 refuses to start
+without. Put the keys in `secrets/aws.env`:
+
+```bash
+cp secrets/aws.env.example secrets/aws.env
+$EDITOR secrets/aws.env        # access key, secret key, AWS_DEFAULT_REGION
+```
+
+Any AWS account with admin rights and a public hosted zone works just as
+well; RHDP is the quick path, not a requirement. Order it early either way —
+these environments expire, and the GPU quota in step 3 can take days to
+approve.
+
+**2. Pick your platform.** Set `PLATFORM` in `cluster.env`.
 
 | Platform | Status | Read this |
 |---|---|---|
@@ -57,14 +73,24 @@ without uninstalling anything. See
 | `ibmcloud` | Config generation ready, not yet run | [docs/ibm-cloud.md](docs/ibm-cloud.md) |
 | `baremetal` | Config generation ready, not yet run | [docs/bare-metal.md](docs/bare-metal.md) |
 
-**2. Check you have what you need.** [docs/prerequisites.md](docs/prerequisites.md)
-— accounts, a pull secret, DNS, local tooling, and one workstation kernel
-setting that will otherwise fail the install 40 seconds in.
+**3. Check you have what you need.** [docs/prerequisites.md](docs/prerequisites.md)
+— a pull secret, DNS, local tooling, the GPU instance quota (which defaults to
+**0** on a new account), and one workstation kernel setting that will
+otherwise fail the install 40 seconds in.
 
-**3. Follow your platform's walkthrough.** Each one is a linear
+**4. Build the network, then the cluster.** `scripts/10-deploy-cluster.sh`
+creates the VPC as a CloudFormation stack from
+[`cloudformation/01_vpc.yaml`](cloudformation/01_vpc.yaml), waits for it, and
+installs OpenShift into it. The stack carries no
+`kubernetes.io/cluster/*: owned` tags, so it is **not** torn down with the
+cluster and the next build reuses it — see
+[what that buys you](#how-it-is-put-together). Re-running phase 10 against an
+existing stack reuses it rather than creating a second.
+
+**5. Follow your platform's walkthrough.** Each one is a linear
 start-to-finish page.
 
-**4. Then:**
+**6. Then:**
 
 - [docs/gpu-and-models.md](docs/gpu-and-models.md) — choosing a model, GPU
   nodes, and OCI modelcars

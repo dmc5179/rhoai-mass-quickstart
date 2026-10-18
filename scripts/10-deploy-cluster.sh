@@ -6,7 +6,9 @@
 #   1. ensure the network exists (AWS: the VPC CloudFormation stack)
 #   2. render install-config.yaml for the platform in cluster.env
 #   3. run the installer (bare metal: build an agent ISO and wait for it)
-#   4. add on-demand and spot GPU machine sets at replica 0 (AWS only)
+#
+# GPU machine sets are NOT created here. The gpu-nodes AutoShift policy owns
+# them from phase 50 onwards; see the note at step 4 below.
 #
 # Usage: scripts/10-deploy-cluster.sh [--dry-run] [--log-level <level>]
 #
@@ -156,7 +158,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
         echo "==> [dry-run] would run: \$OPENSHIFT_INSTALL create cluster --dir ${CLUSTER_DIR}"
     fi
     [ "$PLATFORM" = "aws" ] && \
-        echo "==> [dry-run] would add GPU machine sets (${GPU_INSTANCE_TYPE}, on-demand + spot, replicas=0)"
+        echo "==> [dry-run] would NOT add GPU machine sets; the gpu-nodes policy owns them from phase 50"
     exit 0
 fi
 
