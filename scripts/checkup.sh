@@ -266,9 +266,25 @@ if want load; then
               etcdctl endpoint status -w json 2>/dev/null \
               | python3 -I -c 'import json,sys;print(max(e["Status"]["dbSize"] for e in json.load(sys.stdin))//1048576)' 2>/dev/null)"
         if [ -n "$db" ]; then
-            if   [ "$db" -lt 250 ]; then ok "etcd ${db} MB (4 vCPU / 16 GiB control plane is sized for this)"
-            elif [ "$db" -lt 500 ]; then warn "etcd ${db} MB" "Red Hat suggests 8 vCPU / 32 GiB above ~250 MB (articles/7132959)"
-            else bad "etcd ${db} MB" "Above ~500 MB Red Hat suggests 10 vCPU / 48 GiB. Expect API timeouts before this looks like a sizing problem."; fi
+            # Compare against what the control plane actually is, not against a
+            # fixed string. Reporting the recommendation as though it described
+            # this cluster is how you reassure someone about a machine they do
+            # not have. Red Hat articles/7132959 keys the recommendation off the
+            # pre-defrag high-water mark, which is what etcdctl reports here.
+            if   [ "$db" -lt 250 ]; then want_cpu=4
+            elif [ "$db" -lt 500 ]; then want_cpu=8
+            else                          want_cpu=10; fi
+            cpu="$(run get nodes -l node-role.kubernetes.io/control-plane \
+                   -o jsonpath='{.items[*].status.capacity.cpu}' | tr ' ' '\n' | sort -n | head -1)"
+            have="${cpu:-?} vCPU"
+            if [ -n "$cpu" ] && [ "$cpu" -ge "$want_cpu" ]; then
+                ok "etcd ${db} MB, control plane ${have} (needs ${want_cpu})"
+            elif [ -n "$cpu" ]; then
+                bad "etcd ${db} MB on a ${have} control plane" \
+                    "articles/7132959 suggests ${want_cpu} vCPU at this etcd size. Expect API timeouts, crash-looping ovnkube-controller and NotReady nodes before anything says 'too small'."
+            else
+                warn "etcd ${db} MB" "could not read control plane CPU capacity"
+            fi
         fi
     fi
     maxcpu="$(run describe node -l node-role.kubernetes.io/worker \
