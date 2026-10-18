@@ -28,6 +28,18 @@ Order matters. Helm reads values at install time, so phase 45 has to run
 before the bootstrap that applies it — running it afterwards means another
 bootstrap. Phase 45 needs only a reachable cluster, not ACM.
 
+Coming to MaaS through policies rather than through phase 20 means one thing
+phase 20 would have done for you is missing — a PostgreSQL database, which
+`maas-api` will not start without:
+
+```bash
+scripts/maas-database.sh create   # AWS RDS, ~10 min
+```
+
+No label supplies this, and its absence presents as a gateway fault while
+every policy reports Compliant. See
+[docs/running-under-autoshift.md](docs/running-under-autoshift.md).
+
 `adopt` is the step that cannot be undone by editing values: it activates
 every enabled policy at once, and turning a label back off stops reconciling
 without uninstalling anything. See

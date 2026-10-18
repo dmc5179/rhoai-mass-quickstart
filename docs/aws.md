@@ -133,6 +133,22 @@ scripts/20-deploy-maas.sh --with-observability
 scripts/20-deploy-maas.sh --from-phase 4     # resume after a failure
 ```
 
+### Or get MaaS from AutoShift instead
+
+If the cluster is already under AutoShift, the same stack arrives as policy
+and you skip phase 20 entirely:
+
+```bash
+scripts/autoshift-feature.sh enable maas
+scripts/maas-database.sh create     # phase 20 would have done this
+scripts/checkup.sh
+```
+
+The database step is not optional and is easy to miss, because it is the one
+piece `setup-maas.sh` does that no policy does. Details and the failure it
+produces are in
+[running-under-autoshift.md](running-under-autoshift.md).
+
 ## 7. Prove it works
 
 ```bash

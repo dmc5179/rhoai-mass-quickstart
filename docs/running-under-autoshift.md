@@ -142,13 +142,22 @@ it is the only approach that leaves you able to attribute a regression.
 
 ## Enable the MaaS chain as a unit
 
-Four labels are one feature, and any subset is broken:
+Five labels are one feature, and any subset is broken:
 
 ```yaml
 openshift-ai: 'true'          # the DataScienceCluster
 connectivity-link: 'true'     # Kuadrant/Authorino
 openshift-ai-maas: 'true'     # the gateway
 openshift-ai-models: 'true'   # plus config.openshiftAiModels
+leader-worker-set: 'true'     # multi-node serving
+```
+
+Rather than hand-editing those, use the helper, which refuses to enable a
+group whose prerequisite feature is off or whose required config is absent:
+
+```bash
+scripts/autoshift-feature.sh list
+scripts/autoshift-feature.sh enable maas   # requires: gpu
 ```
 
 The upstream `hub.yaml` shipped with `openshift-ai-maas: 'true'` and
@@ -158,6 +167,65 @@ sit Pending on an unmet dependency.
 
 RHOAI is roughly 75 GB of images. Do not enable it until the control plane has
 headroom.
+
+## MaaS needs a database, and no label will give you one
+
+This is the fifth requirement of that chain and the one that catches people,
+because it is not a label and nothing in the policy layer supplies it.
+
+`maas-api` reads a PostgreSQL connection URL from a Secret, once, at startup.
+Without it the pod does not degrade — it exits:
+
+```
+error: failed to load database URL: failed to read secret
+redhat-ai-gateway-infra/maas-db-config: secrets "maas-db-config" not found
+```
+
+and `CrashLoopBackOff`s indefinitely. Every MaaS policy reports Compliant
+throughout, because every MaaS policy is doing exactly what it was asked.
+What you see three layers away is an *authenticated* request to the gateway
+answered with `no healthy upstream`, which points at the gateway.
+
+**The script path and the policy path differ here, and that is the whole
+trap.** Phase 20 wraps the guide's `setup-maas.sh`, which deploys a
+single-replica `postgres` Deployment with a PVC and creates `maas-db-config`
+itself. Arriving at MaaS through AutoShift policies instead, you skip that
+script — and nothing else creates a database.
+
+On AWS, provision one:
+
+```bash
+scripts/maas-database.sh create          # RDS PostgreSQL, ~10 min
+scripts/maas-database.sh status
+```
+
+It writes the Secret into `redhat-ai-gateway-infra`, so it has to run after
+RHOAI has created that namespace. To overlap the ~10 minutes of RDS
+provisioning with the RHOAI rollout, split it:
+
+```bash
+scripts/maas-database.sh create --no-secret   # any time after the VPC exists
+scripts/maas-database.sh secret               # once the namespace is there
+```
+
+`maas-api` only reads the Secret at startup, so if it is already crash-looping
+when the Secret lands, restart it:
+
+```bash
+oc rollout restart deployment/maas-api -n redhat-ai-gateway-infra
+```
+
+Off AWS, use that provider's managed PostgreSQL or run
+`crunchy-postgres-operator` in-cluster — it is in the mirror list for exactly
+this reason. There is deliberately no `cloudnative-pg` policy: a database the
+cluster depends on, running inside that cluster, makes its own backups and
+failover the cluster's problem.
+
+`policy-openshift-ai-maas-db` is an inform-only policy asserting that the
+Secret exists and that the `maas-api` Deployment is Available, so the cause
+is visible at the layer that owns it rather than as a gateway symptom. It
+never looks at the Secret's contents — the URL carries a password and is
+created out of band, the same way the Lightspeed API key is.
 
 ## ACM shadows `machine` and `machineset`
 
