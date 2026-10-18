@@ -101,10 +101,31 @@ The fix is one shared preamble replacing the single `ternary` line in each file:
 `dig` throughout, because that is what turns a nil dereference into an empty
 string.
 
-**Land this as a separate prerequisite PR before the IBM work**, with a third
-worker `MachineSet` stub carrying vSphere fields only and no `placement`, so the
-bug is reproducible in CI. Without that stub the fix is unverifiable by the same
-mechanism that hid the problem.
+**Land this as a separate prerequisite PR before the IBM work.** Applied to the
+fork as `e494f5a2`.
+
+**Correction, found by trying it: the fix cannot be proved in CI, and the
+obvious way to try breaks the build.** This page previously recommended adding
+a third worker `MachineSet` stub carrying vSphere fields only and no
+`placement`. That does not work. Every manifest ranges over the same shared
+fixture with `$worker_ms` set to the *last* match, so a single-provider stub
+also reaches the AWS **create** manifests:
+
+```
+template: tmpl:36:52: executing "tmpl" at
+<.spec.template.spec.providerSpec.value.placement.availabilityZone>:
+invalid value; expected string
+```
+
+It broke `policy-gpu-nodes-aws` among others — manifests that are correct on a
+real cluster, because each is gated by its own `placement-aws.yaml` provider
+predicate. The hybrid fixture is not merely masking the bug; the whole harness
+assumes one worker MachineSet shared by every provider profile.
+
+Proving this needs per-provider MachineSet fixtures keyed to the profile under
+test — a harness change, and a prerequisite to the prerequisite. Until then the
+fix is reviewable but not CI-verifiable, which is worth saying in the PR rather
+than letting a green build imply coverage that does not exist.
 
 ## The 22 touchpoints
 
