@@ -73,6 +73,8 @@ start-to-finish page.
 - [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
   for an ACM hub, why `adopt` is the irreversible step, and the failures that
   do not say what they are
+- [docs/model-egress-rollout.md](docs/model-egress-rollout.md) — staging the
+  outbound controls for model namespaces, and why the shipped layer is off
 - [docs/troubleshooting.md](docs/troubleshooting.md) — things that have
   actually gone wrong here
 - [docs/reference.md](docs/reference.md) — every script and every setting
