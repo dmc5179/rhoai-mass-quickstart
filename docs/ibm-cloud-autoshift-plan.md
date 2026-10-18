@@ -1,6 +1,18 @@
 # Adding IBM Cloud support to AutoShift
 
-Research, not yet implemented. Everything here is verified against
+> **Parked, 2026-10-18. Not a backlog item.** This project is not adding IBM
+> Cloud to AutoShift; IBM Cloud OpenShift deployment is being handled as a
+> separate effort elsewhere. The page is kept because the research was done
+> and may be worth something to that effort — not because anyone intends to
+> build this. It is unlinked from the README for that reason.
+>
+> One thing here *was* built and should not be reverted: the
+> provider-tolerant zone fix below, applied as `e494f5a2` in the AutoShift
+> fork. It corrects a real nil dereference on vSphere and every other
+> non-AWS provider spec, and it is live and verified on the AWS cluster. IBM
+> Cloud is how it was noticed, not why it matters.
+
+Research, not implemented. Everything here is verified against
 `auto-shift/autoshiftv2` at `6a0ee770` (`main`, and identical on `rhoai-maas`
 for every path involved), the live OpenShift 4.22 cluster, and Red Hat product
 documentation. Items marked *inferred* are not verified.
