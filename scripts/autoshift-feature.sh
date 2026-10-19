@@ -37,6 +37,7 @@ feature_labels() {
         maas)       echo "openshift-ai connectivity-link openshift-ai-maas openshift-ai-models leader-worker-set" ;;
         lightspeed) echo "openshift-lightspeed" ;;
         mcp)        echo "mcp-gateway" ;;
+        workloads)  echo "gitops-workloads" ;;
         *)          return 1 ;;
     esac
 }
@@ -45,7 +46,8 @@ feature_labels() {
 # be non-empty. A label without its config is the silent-no-op case.
 feature_config() {
     case "$1" in
-        maas) echo "openshiftAiModels" ;;
+        maas)      echo "openshiftAiModels" ;;
+        workloads) echo "gitopsWorkloads" ;;
         *)    echo "" ;;
     esac
 }
@@ -61,7 +63,7 @@ feature_requires() {
     esac
 }
 
-ALL_FEATURES="gpu rhoai maas lightspeed mcp"
+ALL_FEATURES="gpu rhoai maas lightspeed mcp workloads"
 
 ACTION="${1:-}"; shift || true
 VALUES_FILE=""

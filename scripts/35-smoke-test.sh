@@ -96,6 +96,26 @@ API_KEY_ID="$(jq -r '.id // empty' <<<"$KEY_RESPONSE")"
 [ -n "$API_KEY" ] || {
     echo "Error: could not mint an API key." >&2
     echo "       Response: ${KEY_RESPONSE:0:300}" >&2
+    # The most likely cause once a cluster narrows access, and the message the
+    # API returns does not hint at it. "invalid_subscription" here does not
+    # mean the subscription is missing - we just listed it above - it means the
+    # CALLER is not in its owner group. This script mints with `oc whoami -t`,
+    # a human identity, so any accessGroup that does not include real users
+    # locks it out while everything else keeps working.
+    if grep -q 'invalid_subscription' <<<"$KEY_RESPONSE"; then
+        OWNER="$("$OC" get maassubscription -A \
+            -o jsonpath='{.items[0].spec.owner.groups[*].name}' 2>/dev/null)"
+        cat >&2 <<HINT
+
+       The subscription exists; you are not in its owner group.
+         subscription owner groups: ${OWNER:-<unreadable>}
+         you:                       $("$OC" whoami 2>/dev/null || echo '<unknown>')
+
+       This is expected if accessGroup was narrowed to service accounts.
+       To let humans mint again, add a group alongside it in
+       config.openshiftAiModels.models[].accessGroup, then re-bootstrap.
+HINT
+    fi
     exit 1
 }
 echo "    key id ${API_KEY_ID}"
