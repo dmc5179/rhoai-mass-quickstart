@@ -9,7 +9,7 @@ Ordered by how early a new contributor hits them.
 Issues 6–9 are filed as
 [#281](https://github.com/auto-shift/autoshiftv2/issues/281)–
 [#285](https://github.com/auto-shift/autoshiftv2/issues/285).
-**Issues 10–12 below are NOT filed yet.**
+**Issues 10–13 below are NOT filed yet.**
 
 Issues 2–5 are all in the two scaffolders, and all share a shape: the generator
 produces a directory that the repository's own validators then reject, so the
@@ -283,6 +283,69 @@ one-way; or support staged activation so capability can be added in batches.
 The underlying behaviour is reasonable. What is missing is that nothing warns
 the operator of the cluster that a single label change is about to install
 twenty operators, and that there is no path back.
+
+---
+
+## 13. Shipped policies use `musthave` on configurable object lists, which the project's own docs say is wrong
+
+**Type:** bug · **Fix ready:** for our policy, yes — upstream instance not fixed
+
+`docs/policy-behavior.md` states the rule plainly:
+
+> **`musthave` merges into lists, it never replaces them.** Changing the value
+> of an entry in an object list leaves both the old entry and the new one in
+> place, and the policy still reports Compliant. This silently defeats
+> configuration changes that look correct in git. When the desired state has to
+> override an existing list entry, use `mustonlyhave`.
+
+Shipped policies do not follow it. We hit this in our own policy first —
+raising a rate limit from 100 to 50000 produced a live object carrying both
+values while the policy reported Compliant — and fixed it with
+`mustonlyhave`. Then the same shape turned up upstream.
+
+**`policies/stable/disconnected-mirror/manifests/image-digest-mirror-set.yaml`**
+builds `spec.imageDigestMirrors` by ranging over a configured list of mirrors,
+under `complianceType: musthave`:
+
+```yaml
+  - complianceType: musthave
+    objectDefinition:
+      kind: ImageDigestMirrorSet
+      metadata:
+        name: autoshift-disconnected-mirrors
+      spec:
+        imageDigestMirrors:
+        {{hub range $_, $entry := $mirrors hub}}
+          - source: {{hub $source hub}}
+            mirrors:
+              - '{{hub $mirrorLoc hub}}'
+        {{hub end hub}}
+```
+
+The `ImageContentSourcePolicy` branch in the same file has the identical
+shape, as does `workload-partitioning/manifests/performance-profile.yaml` for
+its hugepages list.
+
+**Why this one matters more than ours.** Changing a mirror host, correcting a
+path, or removing a decommissioned mirror leaves the old entry in the live
+`ImageDigestMirrorSet` permanently. On a disconnected cluster that means pulls
+keep being redirected to a registry that may no longer exist, and the only
+signal is the pull failure — the policy reports Compliant, `oc get policy`
+is clean, and the git history shows the mirror was removed. Combined with
+`pruneObjectBehavior: None`, nothing ever removes it.
+
+**Reproduce:**
+1. Configure one mirror, let it reconcile, confirm the `ImageDigestMirrorSet`.
+2. Change the mirror's `source` or `mirror` value in the values file.
+3. Re-render and sync. The live object has both entries; the policy is
+   Compliant.
+
+**Suggested fix:** `mustonlyhave` on any object template whose body writes a
+templated list. A lint for it is plausible — the validation suite already
+parses these files, and "`complianceType: musthave` on an object containing a
+`range` that emits list entries" is a mechanical check. That would turn a
+documented footgun into a build failure, which is the pattern the repo already
+uses for policy names and the label contract.
 
 ---
 
