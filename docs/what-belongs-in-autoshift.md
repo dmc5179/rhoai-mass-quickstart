@@ -39,6 +39,48 @@ it reached the same conclusion independently and named two things that fit
 badly in a PolicyGenerator + Helm flow: a runtime-minted `sk-` key that cannot
 be declared in Git, and an initContainer that renders config onto a PVC.
 
+### Three mechanisms, not two
+
+The two-column table is the first cut. The useful rule has a middle:
+
+| Shape | Mechanism | Example |
+|---|---|---|
+| Operators, cluster config, node pools | Plain policy | `connectivity-link`, `gpu-nodes` |
+| A **shaped CR** that varies by a handful of fields | **Config-driven** policy, ranged over a list in rendered-config | `openshift-ai-models` |
+| **Arbitrary manifests** with their own repo and cadence | **Pointer** policy → ArgoCD Application | Hermes |
+
+The middle row matters because it solves the same growth problem by a
+different route. `openshift-ai-models` deploys real serving workloads — which
+is tenant-shaped by the test above — yet the repository does not grow per
+model, because the model list lives in `config.openshiftAiModels` and the
+policy ranges over it. Adding a model is a values change.
+
+So the question to ask is not only "is this platform or workload", it is **"can
+I template this as a shaped CR?"** If yes, config-driven keeps it in-repo at
+zero marginal cost. Reach for the pointer only when the content is arbitrary.
+
+### Why the RHOAI MaaS policies stay
+
+Applying this to our own work, on the grounds that it is the obvious thing to
+reconsider: they stay, and the reasons are worth recording so the question is
+not reopened from scratch.
+
+- They are **ACM Policies, not Argo applications.** A pointer policy creates an
+  `Application`; it is not a route for delivering `Policy` objects.
+- They pass both tests in the first table — every operator here is wanted by
+  any tenant of an RHOAI cluster, and none carries its own version.
+- **Ten of the fourteen directories render the shared chart by relative path**
+  (`chartHome: ../../../../../components/`, `helmCharts: [operator-install]`).
+  That resolves only inside this tree. Extracting them breaks all ten.
+- Extraction forfeits `make test` — the label contract, the 40-character cap,
+  empty-policy detection, the OperatorGroup install-mode check that found six
+  real failures — and the upstream contribution path.
+
+**The one contingency.** If upstream declines the RHOAI MaaS policies as too
+product-specific, the fallback is a separate *policy collection* repo with the
+same layout, distributed by the `managed-autoshift` mechanism rather than by a
+workload pointer. That is a response to a rejection, not a plan.
+
 ## Why not a submodule
 
 It is the obvious idea and it is the wrong tool here, for four reasons:
