@@ -120,8 +120,12 @@ tracking. Clients talk to it with the OpenAI API:
 curl https://maas.apps.<your-cluster>/v1/chat/completions \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
-  -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"publishers/llm/models/<name>","messages":[{"role":"user","content":"Hello"}]}'
 ```
+
+The `model` field takes the **qualified** id that `/maas-api/v1/models`
+reports in `.data[].id`, not the `LLMInferenceService` name — the bare name
+404s on this route. See [docs/verifying.md](docs/verifying.md#the-model-id-is-qualified-and-the-bare-name-404s).
 
 ## How it is put together
 

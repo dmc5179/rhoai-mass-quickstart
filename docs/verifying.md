@@ -58,12 +58,43 @@ KEY=$(curl -sSk -X POST "$HOST/maas-api/v1/api-keys" \
   -H 'Content-Type: application/json' \
   -d "{\"name\":\"manual\",\"expiresIn\":\"1h\",\"subscription\":\"$SUB\"}" | jq -r .key)
 
-curl -sSk "$HOST/maas-api/v1/models" -H "Authorization: Bearer $KEY" | jq .
+# Take the model id from HERE. It is not the LLMInferenceService name.
+MODEL=$(curl -sSk "$HOST/maas-api/v1/models" -H "Authorization: Bearer $KEY" | jq -r '.data[0].id')
+echo "$MODEL"   # publishers/llm/models/granite-4-tiny-gpu
 
 curl -sSk "$HOST/v1/chat/completions" \
   -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"<id>","messages":[{"role":"user","content":"Hello"}]}' | jq -r '.choices[0].message.content'
+  -d "$(jq -nc --arg m "$MODEL" '{model:$m,messages:[{role:"user",content:"Hello"}]}')" \
+  | jq -r '.choices[0].message.content'
 ```
+
+### The model id is qualified, and the bare name 404s
+
+On the body-based route, `model` must be the **fully qualified publisher
+id** that `/maas-api/v1/models` reports in `.data[].id`:
+
+```
+{"model":"publishers/llm/models/granite-4-tiny-gpu"}   -> 200
+{"model":"granite-4-tiny-gpu"}                         -> 404
+```
+
+The bare name is the `LLMInferenceService` name, and reading it off the
+cluster is the natural wrong move. It 404s because the gateway's HTTPRoute
+matches on a derived `X-Gateway-Model-Name:
+publishers/llm/models/<name>` header; a bare name matches no rule.
+
+Two things make this harder than it should be:
+
+- **The advice does not transfer between routing modes.** On the legacy
+  path-based route — `/llm/granite-4-tiny-gpu/v1/chat/completions` — the bare
+  name *is* correct, because it is in the URL. Guidance written for one route
+  is wrong for the other.
+- **A successful response does not tell you what to send.** The 200 echoes the
+  *served* name back, not the id you must use. Only `/v1/models` is
+  authoritative.
+
+Always resolve the id from `/maas-api/v1/models` rather than constructing it.
+`scripts/35-smoke-test.sh` does exactly that — it never hardcodes a name.
 
 ## Deeper: the verify-guide skill
 
