@@ -126,6 +126,26 @@ if [ -z "$MODEL" ]; then
         exit 1
     }
     echo "==> Gateway lists ${COUNT} model(s); using ${MODEL}"
+else
+    # A model passed with --model is the one case where a bare name reaches the
+    # gateway. On the body-based route the id must be the qualified publisher
+    # form the gateway advertises - 'publishers/<ns>/models/<name>' - because
+    # the HTTPRoute matches a derived X-Gateway-Model-Name header. A bare name
+    # matches no rule and 404s, and the natural source for a bare name is the
+    # LLMInferenceService on the cluster, so this is an easy and confusing
+    # mistake. Caught here rather than left to a 404 with no explanation.
+    case "$MODEL" in
+        */*) ;;
+        *)
+            echo "Error: --model '${MODEL}' is not a qualified model id." >&2
+            echo "       The body-based route needs the form the gateway advertises," >&2
+            echo "       e.g. publishers/llm/models/${MODEL} - not the" >&2
+            echo "       LLMInferenceService name. A bare name returns HTTP 404." >&2
+            echo "       Omit --model to use the first id the gateway lists, or see:" >&2
+            echo "         curl -sSk \"\${HOST}/maas-api/v1/models\" -H \"Authorization: Bearer \$KEY\" | jq -r '.data[].id'" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 # --- inference --------------------------------------------------------------
