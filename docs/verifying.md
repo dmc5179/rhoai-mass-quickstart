@@ -96,6 +96,59 @@ Two things make this harder than it should be:
 Always resolve the id from `/maas-api/v1/models` rather than constructing it.
 `scripts/35-smoke-test.sh` does exactly that — it never hardcodes a name.
 
+### A ServiceAccount can mint its own key — measured, not assumed
+
+`scripts/35-smoke-test.sh` mints with `oc whoami -t`, a **user** token. That is
+right for a smoke test and wrong for a long-running workload: a user token is
+tied to a human, so if they leave or lose the role you can end up unable to
+revoke or re-mint a key that still works. An orphaned credential is a harder
+problem than an expired one.
+
+`maas-api` accepts a **projected ServiceAccount token**. Verified end to end on
+this cluster against a bare ServiceAccount in a scratch namespace:
+
+| Step | Result |
+|---|---|
+| `POST /maas-api/v1/api-keys` | `201`, returns an `sk-oai-` key |
+| `GET /maas-api/v1/models` with that key | `200` |
+| `POST /v1/chat/completions` with that key | `200` |
+| `DELETE /maas-api/v1/api-keys/<id>` with the SA token | `200` |
+
+**No RBAC is required.** The ServiceAccount had zero `RoleBinding`s and zero
+`ClusterRoleBinding`s. So a pod can mint for itself at startup and re-mint on
+restart, which removes the rotation chore and the chicken-and-egg where a
+Secret has to exist in a namespace the deployment has not created yet.
+
+```bash
+oc create sa my-agent -n my-namespace
+TOKEN=$(oc create token my-agent -n my-namespace)      # or a projected volume
+curl -sSk -X POST "$HOST/maas-api/v1/api-keys" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"my-agent","expiresIn":"720h","subscription":"<sub>"}'
+```
+
+**Do not set an `audience` on the projected token.** A token requested with
+`--audience=maas` is rejected `401`. The default API-server audience is what
+works, so in a `serviceAccountToken` volume projection leave `audience` unset:
+
+```yaml
+- serviceAccountToken:
+    path: token
+    expirationSeconds: 3600
+    # no audience — setting one gives a 401 from maas-api
+```
+
+That failure is worth knowing in advance. A 401 with a token the API server
+itself accepts sends you looking at RBAC or the gateway, neither of which is
+the cause.
+
+**Security note.** The shipped `MaaSSubscription` has
+`owner.groups: [system:authenticated]`, and every ServiceAccount is a member of
+`system:authenticated`. So *any* ServiceAccount on the cluster can mint a key
+and spend the quota — which is fine for a lab and worth narrowing for anything
+shared. Scope `accessGroup` in `config.openshiftAiModels` to a real group if
+that matters.
+
 ## Deeper: the verify-guide skill
 
 The guide ships a `verify-guide` skill, symlinked into `.claude/skills/`. On
