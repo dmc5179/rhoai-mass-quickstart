@@ -99,6 +99,9 @@ start-to-finish page.
 - [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
   for an ACM hub, why `adopt` is the irreversible step, and the failures that
   do not say what they are
+- [docs/splitting-the-repos.md](docs/splitting-the-repos.md) — moving values
+  out of the AutoShift fork with a multi-source Application, and why that is
+  one new repo rather than several
 - [docs/what-belongs-in-autoshift.md](docs/what-belongs-in-autoshift.md) —
   the platform/workload line, and how to deploy a workload from its own repo
   without vendoring it into AutoShift
