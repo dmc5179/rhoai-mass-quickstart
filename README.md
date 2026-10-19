@@ -99,6 +99,9 @@ start-to-finish page.
 - [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
   for an ACM hub, why `adopt` is the irreversible step, and the failures that
   do not say what they are
+- [docs/what-belongs-in-autoshift.md](docs/what-belongs-in-autoshift.md) —
+  the platform/workload line, and how to deploy a workload from its own repo
+  without vendoring it into AutoShift
 - [docs/model-egress-rollout.md](docs/model-egress-rollout.md) — staging the
   outbound controls for model namespaces, and why the shipped layer is off
 - [docs/troubleshooting.md](docs/troubleshooting.md) — things that have
