@@ -9,7 +9,17 @@ Ordered by how early a new contributor hits them.
 Issues 6–9 are filed as
 [#281](https://github.com/auto-shift/autoshiftv2/issues/281)–
 [#285](https://github.com/auto-shift/autoshiftv2/issues/285).
-**Issues 10–13 below are NOT filed yet.**
+Issues 11–14 are filed as
+[#287](https://github.com/auto-shift/autoshiftv2/issues/287),
+[#288](https://github.com/auto-shift/autoshiftv2/issues/288),
+[#289](https://github.com/auto-shift/autoshiftv2/issues/289) and
+[#290](https://github.com/auto-shift/autoshiftv2/issues/290).
+
+**Issue 10 is NOT filable as written**, and neither was
+[#283](https://github.com/auto-shift/autoshiftv2/issues/283): both are against
+`policies/certified/nvidia-gpu-operator`, a directory that does not exist
+upstream. They are findings about a policy we are contributing, not bugs in
+upstream code, and belong in that PR's description. #283 needs withdrawing.
 
 Issues 2–5 are all in the two scaffolders, and all share a shape: the generator
 produces a directory that the repository's own validators then reject, so the
