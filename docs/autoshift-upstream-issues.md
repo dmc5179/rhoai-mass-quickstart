@@ -24,6 +24,16 @@ closes #289), plus
 [#294](https://github.com/auto-shift/autoshiftv2/pull/294) closing the older
 #276. #290 has no PR — it asks for a design change, not a fix.
 
+`policies/stable/ztwim` is **excluded from the split**. Upstream
+[PR #246](https://github.com/auto-shift/autoshiftv2/pull/246) implements the
+same operator in 44 files and ~4,900 lines — SPIRE config, CNPG datastore,
+federation, nested hub/spoke, 8 placements, 7 test policies. Ours is 5 files
+that install the Subscription and nothing else: no instance CR, so on a real
+cluster it installs an operator that does nothing. We never enabled it, and
+nothing else references it. Commented on #246 to say we are standing down,
+noting that our subscription block came out byte-identical to theirs
+independently.
+
 **Issue 10 is NOT filable as written**, and neither was
 [#283](https://github.com/auto-shift/autoshiftv2/issues/283): both are against
 `policies/certified/nvidia-gpu-operator`, a directory that does not exist
