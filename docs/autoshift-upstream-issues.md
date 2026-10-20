@@ -15,6 +15,15 @@ Issues 11–14 are filed as
 [#289](https://github.com/auto-shift/autoshiftv2/issues/289) and
 [#290](https://github.com/auto-shift/autoshiftv2/issues/290).
 
+Each of the three with a fix has a PR open against it:
+[#291](https://github.com/auto-shift/autoshiftv2/pull/291) (NFD vendor label,
+closes #287), [#292](https://github.com/auto-shift/autoshiftv2/pull/292)
+(disconnected-mirror `mustonlyhave`, closes #288),
+[#293](https://github.com/auto-shift/autoshiftv2/pull/293) (adoption docs,
+closes #289), plus
+[#294](https://github.com/auto-shift/autoshiftv2/pull/294) closing the older
+#276. #290 has no PR — it asks for a design change, not a fix.
+
 **Issue 10 is NOT filable as written**, and neither was
 [#283](https://github.com/auto-shift/autoshiftv2/issues/283): both are against
 `policies/certified/nvidia-gpu-operator`, a directory that does not exist
