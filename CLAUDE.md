@@ -98,11 +98,28 @@ then expect to fix what the scaffolder leaves out:
   CI, because the harness builds its synthetic cluster from the first
   non-empty declaration.
 
-Gate everything:
+Gate everything. **`make test` is not the whole gate** — CI also runs a prose
+linter as a separate job, and a docs or comment change can pass `make test`
+and still fail CI:
 
 ```bash
 cd $AUTOSHIFT_DIR && GOTOOLCHAIN=auto make test
+
+# Vale is a Go binary CI fetches by curl; it is not in the Python docs
+# requirements and is not installed by anything else here.
+#   curl -sfL https://github.com/errata-ai/vale/releases/download/v3.17.1/vale_3.17.1_Linux_64-bit.tar.gz \
+#     | tar -xz -C ~/.local/bin vale
+vale sync
+vale --minAlertLevel=error README.md AGENTS.md CLAUDE.md CONTRIBUTING.md docs/ policies/
 ```
+
+Note the lint covers `policies/` as well as `docs/`, so a policy comment is
+prose too. `rhoai-maas` currently has **14 Vale errors**, all in our own
+policies — clean those before cutting the RHOAI PR series or every one of
+them fails CI.
+
+`RedHat.Conjunctions` is the rule to expect: it rejects sentences opening with
+`So`, `And`, `But`. That one cost a round trip on upstream PR #293.
 
 `GOTOOLCHAIN=auto` is required; the pinned Go toolchain will not download
 without it. Check the **skipped** count, not just pass/fail — a block
