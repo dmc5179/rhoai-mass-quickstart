@@ -1,0 +1,185 @@
+# oc-mirror v2 ImageSetConfiguration for RHOAI 3.5.2 Models-as-a-Service on
+# OpenShift 4.22, deployed through AutoShift.
+#
+#   oc-mirror --v2 -c disconnected/imageset-config-rhoai-3.5.2.yaml \
+#     --workspace file://<workspace> docker://<mirror-registry>
+#
+# Every package and channel here was checked against the live v4.22 catalogs on
+# a working 4.22.18 cluster running this exact stack, so nothing is copied from
+# docs or guessed. The only exception is the commented-out optional section,
+# which was checked against the catalog but is not running on that cluster.
+#
+# Notes on the parts that are easy to get wrong:
+#
+#   - Catalog tag must match the cluster minor version: v4.22, not v4.20.
+#   - oc-mirror does NOT resolve OLM dependencies. Anything OLM pulls in
+#     automatically on a connected cluster must be listed by hand. Those are
+#     marked "dependency of" below.
+#   - A package filtered to a channel other than its defaultChannel needs
+#     `defaultChannel:` set, or oc-mirror rejects the catalog it builds.
+#   - A channel with no version range mirrors only the channel head. That is
+#     right for most packages, and wrong for the two pinned below.
+#
+# Not covered here: the OpenShift release payload itself. Mirror that
+# separately (mirror.platform) if the disconnected cluster is installed from
+# this mirror rather than already running.
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  operators:
+    # ==========================================================================
+    # Red Hat operators
+    # ==========================================================================
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.22
+      packages:
+        # ---------------------------------------------------------------------
+        # RHOAI and the MaaS chain
+        # ---------------------------------------------------------------------
+        - name: rhods-operator
+          channels:
+            - name: stable-3.x
+              # Pinned. The channel floats; 3.5.2 is what this stack was
+              # validated against, and it is currently the channel head.
+              minVersion: 3.5.2
+              maxVersion: 3.5.2
+
+        # Connectivity Link: the gateway's authentication and rate limiting.
+        # Its CSV carries the wasm-shim in relatedImages, so the gateway's
+        # Wasm filter needs no separate image entry. The Kuadrant operator
+        # serves plugin.wasm in-cluster over HTTP; Envoy never touches a
+        # registry for it.
+        - name: rhcl-operator
+          channels:
+            - name: stable
+        - name: authorino-operator        # dependency of rhcl-operator
+          channels:
+            - name: stable
+        - name: limitador-operator        # dependency of rhcl-operator
+          channels:
+            - name: stable
+        - name: dns-operator              # dependency of rhcl-operator
+          channels:
+            - name: stable
+
+        - name: openshift-cert-manager-operator
+          channels:
+            - name: stable-v1
+
+        - name: leader-worker-set
+          channels:
+            - name: stable-v1.0
+
+        # The Gateway API on OpenShift 4.22. No CSV for this ever appears on
+        # the cluster, which makes it easy to drop: the ingress operator
+        # installs it itself, pinned by GATEWAY_API_OPERATOR_VERSION on its
+        # own Deployment. The Istio images are NOT in the release payload.
+        # Without this entry there is no istiod, no gateway, and no MaaS.
+        #
+        # Pinned to 3.3.1 rather than the channel head (3.4.3 at time of
+        # writing) because that is the exact version the 4.22 ingress operator
+        # asks for. Mirroring only the head would leave 3.3.1 unavailable.
+        # Re-check after any OpenShift z-stream upgrade:
+        #   oc get deploy ingress-operator -n openshift-ingress-operator \
+        #     -o jsonpath='{.spec.template.spec.containers[*].env}' | tr ',' '\n' | grep GATEWAY_API
+        - name: servicemeshoperator3
+          channels:
+            - name: stable
+              minVersion: 3.3.1
+              maxVersion: 3.3.1
+
+        # ---------------------------------------------------------------------
+        # GPU
+        # ---------------------------------------------------------------------
+        - name: nfd
+          channels:
+            - name: stable
+
+        # ---------------------------------------------------------------------
+        # AutoShift platform. Needed only if the disconnected cluster is
+        # deployed through AutoShift.
+        # ---------------------------------------------------------------------
+        - name: advanced-cluster-management
+          channels:
+            - name: release-2.17
+        - name: multicluster-engine       # dependency of advanced-cluster-management
+          channels:
+            - name: stable-2.17
+        - name: openshift-gitops-operator
+          defaultChannel: gitops-1.21     # package default is `latest`
+          channels:
+            - name: gitops-1.21
+
+        # ---------------------------------------------------------------------
+        # OPTIONAL. AutoShift policies exist for these, but they are not
+        # enabled on the reference cluster. Uncomment what you enable.
+        # ---------------------------------------------------------------------
+        # - name: lightspeed-operator
+        #   channels:
+        #     - name: stable
+        # - name: mcp-gateway             # Developer/Technology Preview
+        #   channels:
+        #     - name: preview
+        #
+        # OpenShell prerequisites:
+        # - name: agent-sandbox-operator  # Preview
+        #   channels:
+        #     - name: preview-0.9
+        # - name: sandboxed-containers-operator
+        #   channels:
+        #     - name: stable
+        # - name: rhbk-operator
+        #   channels:
+        #     - name: stable-v26.6
+        # - name: openshift-zero-trust-workload-identity-manager
+        #   channels:
+        #     - name: stable-v1
+        #
+        # Observability, only for setup-maas.sh --with-observability:
+        # - name: cluster-observability-operator
+        #   channels:
+        #     - name: stable
+        # - name: opentelemetry-product
+        #   channels:
+        #     - name: stable
+        # - name: tempo-product
+        #   channels:
+        #     - name: stable
+        #
+        # Bare metal only. An AWS target has a cloud LoadBalancer:
+        # - name: metallb-operator
+        #   channels:
+        #     - name: stable
+
+    # ==========================================================================
+    # Certified operators
+    # ==========================================================================
+    - catalog: registry.redhat.io/redhat/certified-operator-index:v4.22
+      packages:
+        - name: gpu-operator-certified
+          defaultChannel: v25.3           # package default is v26.7
+          channels:
+            # v25.3, not `stable` or the default. The AutoShift ClusterPolicy
+            # is written against the v25.3 CRD; five fields it once set do not
+            # exist there, which is how that mismatch was found.
+            - name: v25.3
+
+        # PostgreSQL for maas-api. maas-api will not start without a database.
+        # On AWS we use RDS (scripts/maas-database.sh) and this is not needed;
+        # in a disconnected environment with no managed database it is the
+        # supported in-cluster answer.
+        - name: crunchy-postgres-operator
+          channels:
+            - name: v5
+
+  # ============================================================================
+  # Images that no operator bundle references
+  # ============================================================================
+  additionalImages:
+    # vLLM runtime for the served model. Pinned by digest: this exact image is
+    # what serves inference on the reference cluster. Matches
+    # config.openshiftAiModels[].image in the AutoShift hub values.
+    - name: registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:5800e12b2a465f15961fcf34b645d79ed4f91ec9161eab22b1205d12682183c8
+
+    # The served model, as an OCI modelcar. Matches
+    # config.openshiftAiModels[].uri.
+    - name: registry.redhat.io/rhai/modelcar-granite-4-0-h-tiny-fp8-dynamic:3.0
