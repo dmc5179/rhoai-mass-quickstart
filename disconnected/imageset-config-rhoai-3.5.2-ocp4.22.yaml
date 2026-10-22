@@ -1,0 +1,227 @@
+# oc-mirror v2 ImageSetConfiguration: RHOAI 3.5.2 Models-as-a-Service on
+# OpenShift 4.22. Built from the v4.22 catalogs and the 4.22.18 release payload; this
+# exact stack is running and validated on a 4.22.18 reference cluster.
+#
+#   oc-mirror --v2 -c disconnected/imageset-config-rhoai-3.5.2-ocp4.22.yaml \
+#     --workspace file://<workspace> docker://<mirror-registry> \
+#     --authfile <pull-secret.json>
+#
+# Do NOT pass credentials through REGISTRY_AUTH_FILE. oc-mirror v2 embeds a
+# registry that reads every REGISTRY_* variable as its own configuration and
+# fails on the auth section. Use --authfile.
+#
+# Every package, channel and version below was read from the 4.22 catalog
+# images themselves (file-based catalog), not from documentation. Versions in
+# comments are the channel heads at the time this was written.
+#
+# Rules this file follows, per the OpenShift 4.22 oc-mirror v2 documentation:
+#   - oc-mirror v2 does NOT resolve bundle dependencies. Every package OLM
+#     would pull in automatically on a connected cluster is listed by hand.
+#   - A channel with no version range mirrors only that channel's head.
+#   - When the filtered channel is not the package's default channel,
+#     `defaultChannel:` must be set or the generated catalog is invalid.
+#
+# Not included: the OpenShift release payload (mirror.platform). Add it if this
+# mirror will install the cluster rather than serve one that already runs.
+kind: ImageSetConfiguration
+apiVersion: mirror.openshift.io/v2alpha1
+mirror:
+  operators:
+    # ==========================================================================
+    # Red Hat operators
+    # ==========================================================================
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.22
+      packages:
+        # ---------------------------------------------------------------------
+        # Red Hat OpenShift AI
+        # ---------------------------------------------------------------------
+        - name: rhods-operator
+          channels:
+            # stable-3.x is the package default and what the AutoShift policy
+            # subscribes to. Pinned so the mirror cannot drift past the
+            # validated release; 3.5.2 is also the current head of stable-3.x,
+            # stable-3.5 and eus-3.5.
+            - name: stable-3.x
+              minVersion: 3.5.2
+              maxVersion: 3.5.2
+
+        # ---------------------------------------------------------------------
+        # Red Hat Connectivity Link: API keys and rate limiting for MaaS.
+        # Required by RHOAI for Distributed Inference with llm-d.
+        #
+        # PINNED, and this matters. rhcl-operator 1.4.3 declares its three
+        # dependencies with EXACT versions (olm.package.required):
+        #     authorino-operator '1.4.3'
+        #     dns-operator       '1.4.2'
+        #     limitador-operator '1.4.2'
+        # Their channel heads have since moved on (1.4.4 / 1.4.3 / 1.4.3).
+        # Mirroring heads only would leave rhcl-operator uninstallable on a
+        # disconnected cluster - "constraints not satisfiable" - and with it
+        # MaaS. oc-mirror cannot catch this; it does not resolve dependencies.
+        #
+        # This is exactly the set running on the 4.22 reference cluster.
+        #
+        # dns-operator is not used at runtime here: there are no DNSPolicy
+        # resources, and the gateway hostname lives under the cluster's
+        # existing *.apps wildcard in Route 53. It is still a hard install
+        # dependency of rhcl-operator, so it must be mirrored.
+        #
+        # Newer releases exist and are deliberately not used: stable-1.4 heads
+        # at 1.4.4, and stable-1.5 at 1.5.0, which drops these
+        # olm.package.required dependencies entirely. Both are untested with
+        # this stack.
+        # ---------------------------------------------------------------------
+        - name: rhcl-operator
+          channels:
+            - name: stable
+              minVersion: 1.4.3
+              maxVersion: 1.4.3
+        - name: authorino-operator        # exact dependency of rhcl-operator 1.4.3
+          channels:
+            - name: stable
+              minVersion: 1.4.3
+              maxVersion: 1.4.3
+        - name: dns-operator              # exact dependency of rhcl-operator 1.4.3
+          channels:
+            - name: stable
+              minVersion: 1.4.2
+              maxVersion: 1.4.2
+        - name: limitador-operator        # exact dependency of rhcl-operator 1.4.3
+          channels:
+            - name: stable
+              minVersion: 1.4.2
+              maxVersion: 1.4.2
+
+        # ---------------------------------------------------------------------
+        # Required by RHOAI 3.5 for model serving and llm-d
+        # ---------------------------------------------------------------------
+        - name: openshift-cert-manager-operator
+          channels:
+            - name: stable-v1             # head 1.20.1
+        - name: leader-worker-set         # package name; its catalog directory is lws-operator
+          channels:
+            - name: stable-v1.0           # head 1.0.1
+
+        # ---------------------------------------------------------------------
+        # Gateway API (OpenShift Service Mesh 3)
+        #
+        # No CSV for this ever appears on the cluster, which makes it easy to
+        # drop. The ingress operator installs it itself to run the Gateway API
+        # that the MaaS gateway is built on. From the 4.22 release payload's
+        # ingress-operator manifest:
+        #     GATEWAY_API_OPERATOR_CHANNEL = stable
+        #     GATEWAY_API_OPERATOR_VERSION = servicemeshoperator3.v3.3.1
+        #     ISTIO_VERSION                = v1.28.5
+        # The Istio images are NOT in the release payload. Without this entry
+        # there is no istiod, no gateway, and no MaaS.
+        #
+        # Pinned to 3.3.1: the stable head is 3.4.3, so a head-only mirror
+        # would leave out the version the ingress operator asks for. The 3.3.1
+        # bundle carries the Istio v1.28.5 images this OpenShift release runs.
+        # Re-check after any OpenShift z-stream update:
+        #   oc get deploy ingress-operator -n openshift-ingress-operator \
+        #     -o jsonpath='{.spec.template.spec.containers[*].env}' | tr ',' '\n' | grep GATEWAY_API
+        # ---------------------------------------------------------------------
+        - name: servicemeshoperator3
+          channels:
+            - name: stable
+              minVersion: 3.3.1
+              maxVersion: 3.3.1
+
+        # ---------------------------------------------------------------------
+        # GPU: Node Feature Discovery. The NVIDIA GPU operator only deploys its
+        # driver and device plugin onto nodes NFD has labelled
+        # feature.node.kubernetes.io/pci-10de.present. Without NFD a GPU node is
+        # Ready and schedulable and advertises no GPU.
+        # ---------------------------------------------------------------------
+        - name: nfd
+          channels:
+            - name: stable                # head 4.22.0-202610140833
+
+        # ---------------------------------------------------------------------
+        # AutoShift platform: needed only when deploying through AutoShift.
+        # ---------------------------------------------------------------------
+        - name: advanced-cluster-management
+          channels:
+            - name: release-2.17          # head 2.17.3
+        - name: multicluster-engine       # dependency of advanced-cluster-management
+          channels:
+            - name: stable-2.17           # head 2.17.3
+        - name: openshift-gitops-operator
+          defaultChannel: gitops-1.21     # package default is `latest`
+          channels:
+            # 1.21.5 is the validated version. gitops-1.22 (1.22.2) exists but
+            # is untested with AutoShift here.
+            - name: gitops-1.21           # head 1.21.5
+
+        # ---------------------------------------------------------------------
+        # OPTIONAL. AutoShift policies exist for these but they are not enabled
+        # on the reference cluster. Uncomment what you enable.
+        # ---------------------------------------------------------------------
+        # - name: lightspeed-operator
+        #   channels:
+        #     - name: stable              # head 1.1.5
+        # - name: mcp-gateway             # Preview; catalog directory is mcp-gateway-operator
+        #   channels:
+        #     - name: preview             # head 0.7.1
+        #
+        # OpenShell prerequisites:
+        # - name: agent-sandbox-operator  # Preview
+        #   channels:
+        #     - name: preview-0.9         # head 0.9.0
+        # - name: sandboxed-containers-operator
+        #   channels:
+        #     - name: stable              # head 1.13.1
+        # - name: rhbk-operator
+        #   channels:
+        #     - name: stable-v26.6        # head 26.6.7
+        # - name: openshift-zero-trust-workload-identity-manager
+        #   channels:
+        #     - name: stable-v1           # head 1.1.2; 1.2 adds FIPS support
+        #
+        # Observability, for setup-maas.sh --with-observability or the llm-d
+        # dashboards:
+        # - name: cluster-observability-operator
+        #   channels:
+        #     - name: stable
+        # - name: opentelemetry-product
+        #   channels:
+        #     - name: stable
+        # - name: tempo-product
+        #   channels:
+        #     - name: stable
+        #
+        # Bare metal only; a cloud target has its own LoadBalancer:
+        # - name: metallb-operator
+        #   channels:
+        #     - name: stable
+
+    # ==========================================================================
+    # Certified operators
+    # ==========================================================================
+    - catalog: registry.redhat.io/redhat/certified-operator-index:v4.22
+      packages:
+        - name: gpu-operator-certified
+          defaultChannel: v25.3           # package default is v26.7
+          channels:
+            # v25.3, not the default v26.7: the AutoShift ClusterPolicy is
+            # written against the v25.3 CRD.
+            - name: v25.3                 # head 25.3.4
+
+        # PostgreSQL for maas-api, which will not start without a database.
+        # On AWS we use RDS (scripts/maas-database.sh) and this is not needed;
+        # it is the in-cluster answer for a disconnected site with no managed
+        # database.
+        - name: crunchy-postgres-operator
+          channels:
+            - name: v5                    # head 5.8.9
+
+  # ============================================================================
+  # Images no operator bundle references
+  # ============================================================================
+  additionalImages:
+    # vLLM runtime for the served model, pinned by digest. Matches
+    # config.openshiftAiModels[].image in the AutoShift hub values.
+    - name: registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:5800e12b2a465f15961fcf34b645d79ed4f91ec9161eab22b1205d12682183c8
+    # The served model as an OCI modelcar. Matches config.openshiftAiModels[].uri.
+    - name: registry.redhat.io/rhai/modelcar-granite-4-0-h-tiny-fp8-dynamic:3.0
