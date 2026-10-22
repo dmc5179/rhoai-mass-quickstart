@@ -165,41 +165,45 @@ mirror:
             - name: gitops-1.21           # head 1.21.5
 
         # ---------------------------------------------------------------------
-        # OPTIONAL. AutoShift policies exist for these but they are not enabled
-        # on the reference cluster. Uncomment what you enable.
+        # MCP Gateway (Preview). Its catalog directory is mcp-gateway-operator.
+        # Requires rhcl-operator '>=1.3.2' - a range, not an exact pin, and the
+        # pinned rhcl-operator 1.4.3 above satisfies it.
         # ---------------------------------------------------------------------
-        # - name: mcp-gateway             # Preview; catalog directory is mcp-gateway-operator
-        #   channels:
-        #     - name: preview             # head 0.7.1
-        #
-        # OpenShell prerequisites:
-        # - name: agent-sandbox-operator  # Preview
-        #   channels:
-        #     - name: preview-0.9         # head 0.9.0
-        # - name: sandboxed-containers-operator
-        #   channels:
-        #     - name: stable              # head 1.13.1
-        # - name: rhbk-operator
-        #   channels:
-        #     - name: stable-v26.6        # head 26.6.7
-        # - name: openshift-zero-trust-workload-identity-manager
-        #   channels:
-        #     - name: stable-v1           # head 1.1.2; 1.2 adds FIPS support
-        #
-        # Observability, for setup-maas.sh --with-observability or the llm-d
-        # dashboards:
-        # - name: cluster-observability-operator
-        #   channels:
-        #     - name: stable
-        # - name: opentelemetry-product
-        #   channels:
-        #     - name: stable
-        # - name: tempo-product
-        #   channels:
-        #     - name: stable
+        - name: mcp-gateway
+          channels:
+            - name: preview               # head 0.7.1
 
+        # ---------------------------------------------------------------------
+        # OpenShell prerequisites
+        # ---------------------------------------------------------------------
+        - name: agent-sandbox-operator    # Preview
+          channels:
+            - name: preview-0.9           # head 0.9.0
+        - name: sandboxed-containers-operator
+          channels:
+            - name: stable                # head 1.13.1
+        - name: rhbk-operator
+          channels:
+            - name: stable-v26.6          # head 26.6.7-opr.1
+        - name: openshift-zero-trust-workload-identity-manager
+          channels:
+            - name: stable-v1             # head 1.1.2; ztwim-1.2 adds FIPS support
 
-    # ==========================================================================
+        # ---------------------------------------------------------------------
+        # Observability: the llm-d dashboards, and setup-maas.sh
+        # --with-observability
+        # ---------------------------------------------------------------------
+        - name: cluster-observability-operator
+          channels:
+            - name: stable                # head 1.5.3
+        - name: opentelemetry-product
+          channels:
+            - name: stable                # head 0.158.0
+        - name: tempo-product
+          channels:
+            - name: stable                # head 0.22.0
+
+        # ==========================================================================
     # Certified operators
     # ==========================================================================
     - catalog: registry.redhat.io/redhat/certified-operator-index:v4.21
@@ -212,12 +216,12 @@ mirror:
             - name: v25.3                 # head 25.3.4
 
         # PostgreSQL for maas-api, which will not start without a database.
-        # On AWS we use RDS (scripts/maas-database.sh) and this is not needed;
-        # it is the in-cluster answer for a disconnected site with no managed
-        # database.
-        - name: crunchy-postgres-operator
-          channels:
-            - name: v5                    # head 5.8.9
+        # Commented out: on AWS this deployment uses RDS
+        # (scripts/maas-database.sh). Uncomment for a disconnected site with no
+        # managed database - but maas-api still needs PostgreSQL from somewhere.
+        # - name: crunchy-postgres-operator
+        #   channels:
+        #     - name: v5                  # head 5.8.9
 
   # ============================================================================
   # Images no operator bundle references
