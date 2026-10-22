@@ -1,4 +1,5 @@
-# oc-mirror v2 ImageSetConfiguration: RHOAI 3.5.2 Models-as-a-Service on
+# oc-mirror v2 ImageSetConfiguration: RHOAI 3.5.2 with Models-as-a-Service,
+# OpenShift Lightspeed, and the Red Hat Offline Knowledge Portal, on AWS.
 # OpenShift 4.21. Built from the v4.21 catalogs and the 4.21.37 release payload.
 #
 #   oc-mirror --v2 -c disconnected/imageset-config-rhoai-3.5.2-ocp4.21.yaml \
@@ -138,6 +139,16 @@ mirror:
             - name: stable                # head 4.21.0-202610150640
 
         # ---------------------------------------------------------------------
+        # OpenShift Lightspeed: the console assistant. Pointed at a model
+        # served through this cluster's own MaaS gateway, so questions are
+        # answered on local hardware. No olm.package.required dependencies,
+        # unlike Connectivity Link, so there is nothing else to pin.
+        # ---------------------------------------------------------------------
+        - name: lightspeed-operator
+          channels:
+            - name: stable                # head 1.1.5; also the package default
+
+        # ---------------------------------------------------------------------
         # AutoShift platform: needed only when deploying through AutoShift.
         # ---------------------------------------------------------------------
         - name: advanced-cluster-management
@@ -157,9 +168,6 @@ mirror:
         # OPTIONAL. AutoShift policies exist for these but they are not enabled
         # on the reference cluster. Uncomment what you enable.
         # ---------------------------------------------------------------------
-        # - name: lightspeed-operator
-        #   channels:
-        #     - name: stable              # head 1.1.5
         # - name: mcp-gateway             # Preview; catalog directory is mcp-gateway-operator
         #   channels:
         #     - name: preview             # head 0.7.1
@@ -189,11 +197,7 @@ mirror:
         # - name: tempo-product
         #   channels:
         #     - name: stable
-        #
-        # Bare metal only; a cloud target has its own LoadBalancer:
-        # - name: metallb-operator
-        #   channels:
-        #     - name: stable
+
 
     # ==========================================================================
     # Certified operators
@@ -224,3 +228,22 @@ mirror:
     - name: registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:5800e12b2a465f15961fcf34b645d79ed4f91ec9161eab22b1205d12682183c8
     # The served model as an OCI modelcar. Matches config.openshiftAiModels[].uri.
     - name: registry.redhat.io/rhai/modelcar-granite-4-0-h-tiny-fp8-dynamic:3.0
+
+    # Red Hat Offline Knowledge Portal (RHOKP): Red Hat documentation,
+    # solutions, errata and CVEs served locally, so a disconnected site keeps
+    # access to them.
+    #
+    # Both entries below track `:latest`, so every oc-mirror run captures
+    # whatever build the tag points to at that moment. The knowledge bridge in
+    # particular is rebuilt often. Digests when this file was written, for
+    # pinning if a run picks up a bad build:
+    #   rhokp-rhel9            sha256:8a355cd8949d8d03e68012e805638fe99d0021381c71fac8a1df07c33e20f44b
+    #   rhel-knowledge-bridge  sha256:43c3123fe7dcfde94a46e78e6909dd80f70e502a843c34500a6b39648f065238
+    # Pin with name: <repo>@sha256:<digest> in place of :latest.
+    - name: registry.redhat.io/offline-knowledge-portal/rhokp-rhel9:latest
+    # Bridges RHOKP content to Lightspeed. Note the source registry is quay.io
+    # (redhat-services-prod), not registry.redhat.io, so the cluster needs a
+    # mirror redirect for quay.io as well. Because both RHOKP entries are
+    # mirrored by tag rather than digest, oc-mirror writes their redirects to
+    # an ImageTagMirrorSet, not the ImageDigestMirrorSet. Apply both files.
+    - name: quay.io/redhat-services-prod/rhel-lightspeed-tenant/rhel-knowledge-bridge:latest
