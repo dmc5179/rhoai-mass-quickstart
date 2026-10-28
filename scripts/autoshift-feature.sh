@@ -38,6 +38,7 @@ feature_labels() {
         lightspeed) echo "openshift-lightspeed" ;;
         mcp)        echo "mcp-gateway" ;;
         workloads)  echo "gitops-workloads" ;;
+        users)      echo "htpasswd-users" ;;
         *)          return 1 ;;
     esac
 }
@@ -48,6 +49,7 @@ feature_config() {
     case "$1" in
         maas)      echo "openshiftAiModels" ;;
         workloads) echo "gitopsWorkloads" ;;
+        users)     echo "htpasswdUsers" ;;
         *)    echo "" ;;
     esac
 }
@@ -63,7 +65,7 @@ feature_requires() {
     esac
 }
 
-ALL_FEATURES="gpu rhoai maas lightspeed mcp workloads"
+ALL_FEATURES="gpu rhoai maas lightspeed mcp workloads users"
 
 ACTION="${1:-}"; shift || true
 VALUES_FILE=""

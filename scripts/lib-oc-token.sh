@@ -48,3 +48,53 @@ cleanup_oc_token() {
     [ -n "${_OC_TOKEN_KUBECONFIG:-}" ] && rm -f "$_OC_TOKEN_KUBECONFIG"
     return 0
 }
+
+# maas_mint_token sets MAAS_MINT_TOKEN to the bearer token to mint MaaS API keys
+# with, and MAAS_MINT_IDENTITY to who that token belongs to.
+#
+# Minting is deliberately separate from cluster reads. MaaS decides who may mint
+# by Group membership alone - the subscription's owner.groups - and kubeadmin is
+# in none of the Groups a narrowed subscription names. So a script can read the
+# cluster as kubeadmin and still be refused a key. When secrets/maas-user.env
+# exists (written by scripts/maas-user.sh), mint as that htpasswd user instead,
+# which is in the maas-users Group. Otherwise fall back to the current token.
+#
+# The user needs no Kubernetes RBAC for this: the token is used only against the
+# MaaS API, never against the cluster API.
+#
+# Requires: OC and KUBECONFIG set, ROOT pointing at the repository.
+maas_mint_token() {
+    local env="${ROOT}/secrets/maas-user.env"
+    if [ ! -f "$env" ]; then
+        MAAS_MINT_TOKEN="$("$OC" whoami -t 2>/dev/null)"
+        MAAS_MINT_IDENTITY="$("$OC" whoami 2>/dev/null)"
+        return 0
+    fi
+    # shellcheck disable=SC1090
+    . "$env"
+    local server user_kc
+    server="$("$OC" whoami --show-server)"
+    user_kc="$(mktemp)"
+    _MAAS_USER_KUBECONFIG="$user_kc"
+    # The identity provider rolls out by restarting the oauth-openshift pods,
+    # which takes a minute or two after the Secret first appears. Retry rather
+    # than report a fresh cluster as broken.
+    local i
+    for i in 1 2 3 4 5 6; do
+        if KUBECONFIG="$user_kc" "$OC" login -u "$MAAS_USER" -p "$MAAS_USER_PASSWORD" \
+                --server="$server" --insecure-skip-tls-verify=true >/dev/null 2>&1; then
+            MAAS_MINT_TOKEN="$(KUBECONFIG="$user_kc" "$OC" whoami -t)"
+            MAAS_MINT_IDENTITY="$MAAS_USER"
+            return 0
+        fi
+        [ "$i" -lt 6 ] && sleep 20
+    done
+    echo "Error: could not log in as ${MAAS_USER} (from ${env})." >&2
+    echo "       Check the identity provider is live: scripts/maas-user.sh status" >&2
+    return 1
+}
+
+cleanup_maas_mint_token() {
+    [ -n "${_MAAS_USER_KUBECONFIG:-}" ] && rm -f "$_MAAS_USER_KUBECONFIG"
+    return 0
+}

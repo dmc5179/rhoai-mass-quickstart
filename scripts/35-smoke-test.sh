@@ -81,11 +81,14 @@ echo "==> Deployed models:"
     awk '{printf "    %s/%s\n", $1, $2}' || echo "    (none)"
 
 # --- api key ----------------------------------------------------------------
-# Minted with the caller's own OpenShift token; the returned key is what a
-# consumer would actually use.
-echo "==> Minting an API key"
+# Minted as the htpasswd MaaS user when secrets/maas-user.env exists, otherwise
+# with the current token. kubeadmin is in none of the Groups a narrowed
+# subscription names, so it can read everything here and still be refused a key.
+# The returned key is what a consumer would actually use.
+maas_mint_token || exit 1
+echo "==> Minting an API key as ${MAAS_MINT_IDENTITY}"
 KEY_RESPONSE="$(curl -sSk --connect-timeout 10 --max-time 30 \
-    -H "Authorization: Bearer $("$OC" whoami -t)" \
+    -H "Authorization: Bearer ${MAAS_MINT_TOKEN}" \
     -H "Content-Type: application/json" \
     -X POST \
     -d "{\"name\":\"smoke-test\",\"description\":\"scripts/35-smoke-test.sh\",\"expiresIn\":\"1h\",\"subscription\":\"${SUBSCRIPTION}\"}" \
@@ -99,9 +102,9 @@ API_KEY_ID="$(jq -r '.id // empty' <<<"$KEY_RESPONSE")"
     # The most likely cause once a cluster narrows access, and the message the
     # API returns does not hint at it. "invalid_subscription" here does not
     # mean the subscription is missing - we just listed it above - it means the
-    # CALLER is not in its owner group. This script mints with `oc whoami -t`,
-    # a human identity, so any accessGroup that does not include real users
-    # locks it out while everything else keeps working.
+    # CALLER is not in its owner group. Typically this script fell back to
+    # minting as kubeadmin because secrets/maas-user.env does not exist, and
+    # kubeadmin is in none of the owner groups.
     if grep -q 'invalid_subscription' <<<"$KEY_RESPONSE"; then
         OWNER="$("$OC" get maassubscription -A \
             -o jsonpath='{.items[0].spec.owner.groups[*].name}' 2>/dev/null)"
@@ -109,11 +112,12 @@ API_KEY_ID="$(jq -r '.id // empty' <<<"$KEY_RESPONSE")"
 
        The subscription exists; you are not in its owner group.
          subscription owner groups: ${OWNER:-<unreadable>}
-         you:                       $("$OC" whoami 2>/dev/null || echo '<unknown>')
+         you:                       ${MAAS_MINT_IDENTITY:-<unknown>}
 
-       This is expected if accessGroup was narrowed to service accounts.
-       To let humans mint again, add a group alongside it in
-       config.openshiftAiModels.models[].accessGroup, then re-bootstrap.
+       Create the htpasswd MaaS user so this script mints as a member of an
+       owner group:   scripts/maas-user.sh create
+       or add a group you belong to in
+       config.openshiftAiModels.models[].accessGroups, then re-bootstrap.
 HINT
     fi
     exit 1
@@ -121,14 +125,15 @@ HINT
 echo "    key id ${API_KEY_ID}"
 
 cleanup() {
-    # Revoke BEFORE dropping the token kubeconfig: the revoke call needs
-    # `oc whoami -t`, and cleanup_oc_token deletes the file that provides it.
+    # Revoke with the same identity that minted it - a key belongs to its
+    # minter - and BEFORE the token kubeconfigs are deleted.
     if [ "$KEEP_KEY" -eq 0 ] && [ -n "${API_KEY_ID:-}" ]; then
         curl -sSk --max-time 15 -X DELETE \
-            -H "Authorization: Bearer $("$OC" whoami -t)" \
+            -H "Authorization: Bearer ${MAAS_MINT_TOKEN}" \
             "${HOST}/maas-api/v1/api-keys/${API_KEY_ID}" >/dev/null 2>&1 || true
         echo "==> Revoked API key ${API_KEY_ID}"
     fi
+    cleanup_maas_mint_token
     cleanup_oc_token
 }
 trap cleanup EXIT

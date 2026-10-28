@@ -152,6 +152,7 @@ and you skip phase 20 entirely:
 ```bash
 scripts/autoshift-feature.sh enable maas
 scripts/maas-database.sh create     # phase 20 would have done this
+scripts/maas-user.sh create         # a person who can mint MaaS keys
 scripts/checkup.sh
 ```
 

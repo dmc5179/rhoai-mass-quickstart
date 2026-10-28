@@ -227,6 +227,50 @@ is visible at the layer that owns it rather than as a gateway symptom. It
 never looks at the Secret's contents — the URL carries a password and is
 created out of band, the same way the Lightspeed API key is.
 
+## Who can mint a MaaS key
+
+A MaaS subscription is owned by Groups, and only a member can mint an API key.
+No Kubernetes RBAC is involved: MaaS checks the caller's Groups against the
+subscription's `owner.groups` and the auth policy's `subjects.groups`, and
+nothing else.
+
+That has a consequence that surprises people. **`kubeadmin` is in no Group**, so
+once the subscription is narrowed away from `system:authenticated`, kubeadmin can
+read every MaaS object on the cluster and still be refused a key:
+
+```
+{"code":"invalid_subscription","error":"Unable to resolve a subscription for this API key"}
+```
+
+The message names the subscription, not the caller, which sends people looking
+for a subscription that is plainly there.
+
+The hub values grant two Groups, through `openshiftAiModels.models[].accessGroups`:
+
+| Group | Who | How they mint |
+|---|---|---|
+| `system:serviceaccounts:hermes` | every ServiceAccount in `hermes` | the agent mints its own key at startup from its ServiceAccount token |
+| `maas-users` | htpasswd users, from the `htpasswd-users` policy | the RHOAI dashboard's API keys page, or the API |
+
+Create the human user after the cluster is up:
+
+```bash
+scripts/maas-user.sh create      # password -> secrets/maas-user.env, Secret -> openshift-config
+scripts/maas-user.sh status
+```
+
+The `htpasswd-users` policy owns the identity provider, the Group and its role
+bindings, all from git. The password cannot live there, even hashed, so the
+script creates the one Secret the policy waits for. The policy adds the identity
+provider only once that Secret exists, so the order does not matter.
+
+`scripts/35-smoke-test.sh` and `scripts/40-lightspeed.sh` mint as this user
+whenever `secrets/maas-user.env` exists, and fall back to the current token
+otherwise.
+
+Removing a user from `maas-users` does **not** revoke keys they already minted.
+Revoke those by hand.
+
 ## ACM shadows `machine` and `machineset`
 
 Once ACM is installed, the Cluster API CRDs register a second pair of

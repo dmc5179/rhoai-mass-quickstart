@@ -34,6 +34,7 @@ phase 20 would have done for you is missing — a PostgreSQL database, which
 
 ```bash
 scripts/maas-database.sh create   # AWS RDS, ~10 min
+scripts/maas-user.sh create       # the person who mints MaaS keys
 ```
 
 No label supplies this, and its absence presents as a gateway fault while

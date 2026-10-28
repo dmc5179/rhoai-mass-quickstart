@@ -83,7 +83,7 @@ fi
 
 . "${ROOT}/scripts/lib-oc-token.sh"
 ensure_oc_token || exit 1
-trap cleanup_oc_token EXIT
+trap 'cleanup_maas_mint_token; cleanup_oc_token' EXIT
 
 CLUSTER_DOMAIN="$("$OC" get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
 MAAS_HOSTNAME="${MAAS_HOSTNAME:-maas.${CLUSTER_DOMAIN}}"
@@ -145,9 +145,13 @@ echo "    ${CSV}"
 # --- model ------------------------------------------------------------------
 # Mint a key first: the model listing is served by the gateway, which needs
 # one, and it is also what Lightspeed will authenticate with.
-echo "==> Minting a MaaS API key (ttl ${KEY_TTL})"
+# Minted as the htpasswd MaaS user when secrets/maas-user.env exists: kubeadmin
+# is in none of the Groups a narrowed subscription names. The key Lightspeed
+# holds is then owned by that user - revoke it there if the user is removed.
+maas_mint_token || exit 1
+echo "==> Minting a MaaS API key as ${MAAS_MINT_IDENTITY} (ttl ${KEY_TTL})"
 KEY_RESPONSE="$(curl -sSk --max-time 30 \
-    -H "Authorization: Bearer $("$OC" whoami -t)" \
+    -H "Authorization: Bearer ${MAAS_MINT_TOKEN}" \
     -H "Content-Type: application/json" -X POST \
     -d "{\"name\":\"openshift-lightspeed\",\"description\":\"scripts/40-lightspeed.sh\",\"expiresIn\":\"${KEY_TTL}\",\"subscription\":\"${SUBSCRIPTION}\"}" \
     "${HOST}/maas-api/v1/api-keys" 2>/dev/null || echo '{}')"
