@@ -183,13 +183,21 @@ unless you pass `--with-vpc`.
 
 ## A script fails with confusing yq errors
 
-You have Go yq instead of python-yq. The scripts check and refuse, but if you
-bypass them:
+The scripts need Go yq v4 (mikefarah), and you most likely have the Python yq
+(kislyuk) - or both, with the Python one first on `PATH`. The scripts check and
+refuse, but to see what you have:
 
 ```bash
-yq --help | grep -q -- '-y' && echo "python-yq (correct)" || echo "Go yq (wrong)"
-pip install yq
+yq --version            # want: yq (https://github.com/mikefarah/yq/) version v4.x
+type -a yq              # every yq on PATH, in the order they are found
 ```
+
+On Fedora, `dnf install yq` installs the right one. If a `pip install yq` copy
+in `~/.local/bin` shadows it, `pip uninstall yq`.
+
+These scripts used to target the Python yq. They were ported when a machine
+rebuild brought in Fedora's Go yq instead, which is the more common of the two
+and has no Python dependency.
 
 ## Where to look
 

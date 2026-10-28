@@ -37,10 +37,20 @@ for cmd in yq jq; do
     command -v "$cmd" >/dev/null || { echo "Error: '$cmd' is not installed." >&2; exit 1; }
 done
 
-# This script is written against python-yq (kislyuk), which takes jq expressions
-# and needs -y to emit YAML. Go yq (mikefarah) uses an incompatible syntax.
-if ! yq --help 2>&1 | grep -q -- '-y'; then
-    echo "Error: this script needs python-yq (pip install yq), not Go yq." >&2
+# Written against Go yq v4 (mikefarah/yq) - the `yq` Fedora ships. The Python
+# yq (kislyuk, `pip install yq`) shares the name but takes jq syntax and fails
+# here in confusing ways, so check up front.
+#
+# Two idioms used throughout, because Go yq has no --arg/--argjson:
+#   V="$x" yq -i '.a = strenv(V)'   a string, inserted verbatim
+#   V="$j" yq -i '.a = env(V)'      parsed as YAML/JSON, so arrays and integers
+#                                   keep their type
+# Go yq also preserves comments, which the Python yq dropped - see the
+# CHANGEME check at the end.
+if ! yq --version 2>&1 | grep -q 'mikefarah/yq.* v4\.'; then
+    echo "Error: this script needs Go yq v4 (https://github.com/mikefarah/yq)." >&2
+    echo "       Found: $(yq --version 2>&1 | head -1)" >&2
+    echo "       On Fedora: dnf install yq" >&2
     exit 1
 fi
 
@@ -50,7 +60,7 @@ jq -e . "$PULL_SECRET_FILE" >/dev/null || { echo "Error: pull secret is not vali
 
 # Convert "a,b, c" into a JSON array, or [] when empty. The trailing newline
 # matters: with no input at all, `jq -R` reads zero lines and emits nothing,
-# which then breaks --argjson.
+# which then breaks the env() parse that consumes it.
 csv_to_json() {
     printf '%s\n' "${1:-}" |
         jq -R 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))'
@@ -120,7 +130,7 @@ patch_aws() {
         esac
     fi
 
-    subnets_json="$(printf '%s\n' "$subnets_yaml" | yq -c '.platform.aws.vpc.subnets')"
+    subnets_json="$(printf '%s\n' "$subnets_yaml" | yq -o=json -I=0 '.platform.aws.vpc.subnets')"
 
     # Machine sizing comes from cluster.env so it is reviewable in one place
     # alongside everything else about the cluster, rather than being buried in
@@ -139,22 +149,18 @@ patch_aws() {
     done
     echo "    control plane=${cp_reps} x ${cp_type}   workers=${wk_reps} x ${wk_type}"
 
-    yq -y -i \
-        --arg region "$region" \
-        --arg az "$az" \
-        --argjson subnets "$subnets_json" \
-        --arg cptype "$cp_type" \
-        --arg wktype "$wk_type" \
-        --argjson cpreps "$cp_reps" \
-        --argjson wkreps "$wk_reps" \
-        '.platform.aws.region = $region
-         | .platform.aws.vpc.subnets = $subnets
-         | .controlPlane.platform.aws.zones = [$az]
-         | .controlPlane.platform.aws.type = $cptype
-         | .controlPlane.replicas = $cpreps
-         | .compute[0].platform.aws.zones = [$az]
-         | .compute[0].platform.aws.type = $wktype
-         | .compute[0].replicas = $wkreps' \
+    V_REGION="$region" V_AZ="$az" V_SUBNETS="$subnets_json" \
+    V_CPTYPE="$cp_type" V_WKTYPE="$wk_type" V_CPREPS="$cp_reps" V_WKREPS="$wk_reps" \
+    yq -i '
+          .platform.aws.region = strenv(V_REGION)
+        | .platform.aws.vpc.subnets = env(V_SUBNETS)
+        | .platform.aws.vpc.subnets style=""
+        | .controlPlane.platform.aws.zones = [strenv(V_AZ)]
+        | .controlPlane.platform.aws.type = strenv(V_CPTYPE)
+        | .controlPlane.replicas = env(V_CPREPS)
+        | .compute[0].platform.aws.zones = [strenv(V_AZ)]
+        | .compute[0].platform.aws.type = strenv(V_WKTYPE)
+        | .compute[0].replicas = env(V_WKREPS)' \
         "$OUTPUT_FILE"
 }
 
@@ -163,17 +169,15 @@ patch_ibmcloud() {
     : "${BASE_DOMAIN:?BASE_DOMAIN must be set in cluster.env for ibmcloud (a CIS domain zone)}"
     : "${IBM_REGION:?IBM_REGION must be set in cluster.env}"
 
-    yq -y -i \
-        --arg region "$IBM_REGION" \
-        --arg cp "$IBM_CONTROL_PLANE_PROFILE" \
-        --arg wk "$IBM_COMPUTE_PROFILE" \
-        '.platform.ibmcloud.region = $region
-         | .controlPlane.platform.ibmcloud.type = $cp
-         | .compute[0].platform.ibmcloud.type = $wk' \
+    V_REGION="$IBM_REGION" V_CP="$IBM_CONTROL_PLANE_PROFILE" V_WK="$IBM_COMPUTE_PROFILE" \
+    yq -i '
+          .platform.ibmcloud.region = strenv(V_REGION)
+        | .controlPlane.platform.ibmcloud.type = strenv(V_CP)
+        | .compute[0].platform.ibmcloud.type = strenv(V_WK)' \
         "$OUTPUT_FILE"
 
-    [ -n "${IBM_RESOURCE_GROUP}" ] && yq -y -i --arg v "$IBM_RESOURCE_GROUP" \
-        '.platform.ibmcloud.resourceGroupName = $v' "$OUTPUT_FILE"
+    [ -n "${IBM_RESOURCE_GROUP}" ] && V="$IBM_RESOURCE_GROUP" yq -i \
+        '.platform.ibmcloud.resourceGroupName = strenv(V)' "$OUTPUT_FILE"
 
     # An existing VPC needs the VPC name and both subnet lists together;
     # supplying only some of them fails validation in confusing ways.
@@ -186,13 +190,13 @@ patch_ibmcloud() {
             echo "       IBM_COMPUTE_SUBNETS must be set too." >&2
             exit 1
         fi
-        yq -y -i \
-            --arg vpc "$IBM_VPC_NAME" \
-            --argjson cps "$cp_subnets" \
-            --argjson wks "$wk_subnets" \
-            '.platform.ibmcloud.vpcName = $vpc
-             | .platform.ibmcloud.controlPlaneSubnets = $cps
-             | .platform.ibmcloud.computeSubnets = $wks' \
+        V_VPC="$IBM_VPC_NAME" V_CPS="$cp_subnets" V_WKS="$wk_subnets" \
+        yq -i '
+              .platform.ibmcloud.vpcName = strenv(V_VPC)
+            | .platform.ibmcloud.controlPlaneSubnets = env(V_CPS)
+            | .platform.ibmcloud.computeSubnets = env(V_WKS)
+            | .platform.ibmcloud.controlPlaneSubnets style=""
+            | .platform.ibmcloud.computeSubnets style=""' \
             "$OUTPUT_FILE"
         echo "    using existing VPC ${IBM_VPC_NAME}"
     else
@@ -212,13 +216,11 @@ patch_baremetal() {
     local agent_out="${OUTPUT_FILE%/*}/agent-config.yaml"
     [ -f "$agent_template" ] || { echo "Error: missing ${agent_template}" >&2; exit 1; }
 
-    yq -y -i \
-        --arg cidr "$BM_MACHINE_CIDR" \
-        --argjson cp "$BM_CONTROL_PLANE_REPLICAS" \
-        --argjson wk "$BM_COMPUTE_REPLICAS" \
-        '.networking.machineNetwork = [{"cidr": $cidr}]
-         | .controlPlane.replicas = $cp
-         | .compute[0].replicas = $wk' \
+    V_CIDR="$BM_MACHINE_CIDR" V_CP="$BM_CONTROL_PLANE_REPLICAS" V_WK="$BM_COMPUTE_REPLICAS" \
+    yq -i '
+          .networking.machineNetwork = [{"cidr": strenv(V_CIDR)}]
+        | .controlPlane.replicas = env(V_CP)
+        | .compute[0].replicas = env(V_WK)' \
         "$OUTPUT_FILE"
 
     # Single-node OpenShift cannot use platform.baremetal at all. The installer
@@ -227,28 +229,24 @@ patch_baremetal() {
     # go with it: one node has nothing to balance across.
     if [ "$BM_CONTROL_PLANE_REPLICAS" = "1" ] && [ "$BM_COMPUTE_REPLICAS" = "0" ]; then
         echo "    single-node cluster: using 'platform: none' and no VIPs"
-        yq -y -i '.platform = {"none": {}}' "$OUTPUT_FILE"
+        yq -i '.platform = {"none": {}}' "$OUTPUT_FILE"
     else
         : "${BM_API_VIP:?BM_API_VIP must be set in cluster.env (except for single-node)}"
         : "${BM_INGRESS_VIP:?BM_INGRESS_VIP must be set in cluster.env (except for single-node)}"
-        yq -y -i \
-            --arg api "$BM_API_VIP" \
-            --arg ing "$BM_INGRESS_VIP" \
-            '.platform.baremetal.apiVIPs = [$api]
-             | .platform.baremetal.ingressVIPs = [$ing]' \
+        V_API="$BM_API_VIP" V_ING="$BM_INGRESS_VIP" yq -i '
+              .platform.baremetal.apiVIPs = [strenv(V_API)]
+            | .platform.baremetal.ingressVIPs = [strenv(V_ING)]' \
             "$OUTPUT_FILE"
     fi
 
     cp "$agent_template" "$agent_out"
-    yq -y -i \
-        --arg name "$CLUSTER_NAME" \
-        --arg ip "$BM_RENDEZVOUS_IP" \
-        '.metadata.name = $name | .rendezvousIP = $ip' \
+    V_NAME="$CLUSTER_NAME" V_IP="$BM_RENDEZVOUS_IP" yq -i \
+        '.metadata.name = strenv(V_NAME) | .rendezvousIP = strenv(V_IP)' \
         "$agent_out"
 
-    if grep -q CHANGEME "$agent_out"; then
+    if grep -qE '^[^#]*CHANGEME' "$agent_out"; then
         echo "Error: unresolved CHANGEME placeholders in ${agent_out}:" >&2
-        grep -n CHANGEME "$agent_out" >&2
+        grep -nE '^[^#]*CHANGEME' "$agent_out" >&2
         exit 1
     fi
     echo "    wrote ${agent_out}"
@@ -271,24 +269,26 @@ trap cleanup_partial EXIT
 
 # Common fields, applied last so BASE_DOMAIN picks up anything a platform
 # handler resolved (AWS auto-detects it from Route 53).
-yq -y -i \
-    --arg domain "$BASE_DOMAIN" \
-    --arg name   "$CLUSTER_NAME" \
-    --arg ps     "$(tr -d '\n' < "$PULL_SECRET_FILE")" \
-    --arg key    "$(cat "$SSH_KEY_FILE")" \
-    '.baseDomain = $domain
-     | .metadata.name = $name
-     | .pullSecret = $ps
-     | .sshKey = $key' \
+# strenv keeps the pull secret a STRING. env() would parse its JSON into a YAML
+# map, which the installer rejects - pullSecret must be the JSON text itself.
+V_DOMAIN="$BASE_DOMAIN" V_NAME="$CLUSTER_NAME" \
+V_PS="$(tr -d '\n' < "$PULL_SECRET_FILE")" V_KEY="$(cat "$SSH_KEY_FILE")" \
+yq -i '
+      .baseDomain = strenv(V_DOMAIN)
+    | .metadata.name = strenv(V_NAME)
+    | .pullSecret = strenv(V_PS)
+    | .sshKey = strenv(V_KEY)' \
     "$OUTPUT_FILE"
 
 echo "    baseDomain=${BASE_DOMAIN} cluster=${CLUSTER_NAME}"
 
-# Nothing should reach the installer with a placeholder still in it.
-if grep -q CHANGEME "$OUTPUT_FILE"; then
+# Nothing should reach the installer with a placeholder still in it. Comments
+# are excluded: Go yq preserves the template's comments, and those mention
+# CHANGEME by name. A real placeholder is a value, so it never follows a #.
+if grep -qE '^[^#]*CHANGEME' "$OUTPUT_FILE"; then
     echo >&2
     echo "Error: unresolved CHANGEME placeholders remain in ${OUTPUT_FILE}:" >&2
-    grep -n CHANGEME "$OUTPUT_FILE" >&2
+    grep -nE '^[^#]*CHANGEME' "$OUTPUT_FILE" >&2
     exit 1
 fi
 

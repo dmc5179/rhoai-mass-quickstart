@@ -11,15 +11,19 @@ splits by target.
 | `git` | the guide is a submodule | `git --version` |
 | `curl`, `tar` | fetching the installer | — |
 | `jq` | JSON wrangling throughout | `jq --version` |
-| **python-yq** | rendering install-config | `yq --help \| grep -q -- -y` |
+| **Go yq v4** | rendering install-config | `yq --version` (mikefarah/yq v4) |
 | `aws` CLI v2 | AWS only | `aws --version` |
 | `ibmcloud` CLI | IBM Cloud only | `ibmcloud version` |
 
 **`yq` has two incompatible implementations.** These scripts need
-[python-yq](https://github.com/kislyuk/yq) (`pip install yq`), which wraps
-`jq` and needs `-y` to emit YAML. Go yq (mikefarah) uses different syntax and
-will not work. The scripts check this and refuse rather than producing
-nonsense.
+[Go yq v4](https://github.com/mikefarah/yq) (mikefarah) - which is what Fedora
+ships, so `dnf install yq` is all it takes. The Python
+[yq](https://github.com/kislyuk/yq) (`pip install yq`) shares the name but takes
+jq syntax and will not work. The scripts check the version and refuse rather
+than producing nonsense.
+
+If both are installed, whichever comes first on `PATH` wins. `pip install yq`
+into `~/.local/bin` will shadow Fedora's `/usr/bin/yq`.
 
 `oc`, `kubectl`, and `openshift-install-fips` are **not** prerequisites —
 `scripts/00-init.sh` fetches them into `bin/`.
