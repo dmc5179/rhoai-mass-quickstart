@@ -103,6 +103,9 @@ start-to-finish page.
 - [docs/aws-vpc-and-cloudformation.md](docs/aws-vpc-and-cloudformation.md) —
   the contract between the VPC CloudFormation stack and the scripts, for
   anyone writing a new network template or VPC deploy script
+- [docs/rhoai-disconnected-additional-images.md](docs/rhoai-disconnected-additional-images.md) —
+  what each of the 48 RHOAI 3.5.2 "additional images" is for, and why a fresh
+  MaaS install needs none of them
 - [docs/splitting-the-repos.md](docs/splitting-the-repos.md) — moving values
   out of the AutoShift fork with a multi-source Application, and why that is
   one new repo rather than several
