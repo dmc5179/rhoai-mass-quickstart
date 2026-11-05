@@ -15,7 +15,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `45-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
 | `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). `refresh` pulls policy changes from Git immediately. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
-| `generate-install-config.sh` | Render `install-config.yaml`. Called by phase 10. |
+| `generate-install-config.sh` | Render `install-config.yaml` from the template and the VPC stack's outputs. Called by phase 10. Needs Go yq v4. See [aws-vpc-and-cloudformation.md](aws-vpc-and-cloudformation.md). |
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |

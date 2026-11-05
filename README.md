@@ -100,6 +100,9 @@ start-to-finish page.
 - [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
   for an ACM hub, why `adopt` is the irreversible step, and the failures that
   do not say what they are
+- [docs/aws-vpc-and-cloudformation.md](docs/aws-vpc-and-cloudformation.md) —
+  the contract between the VPC CloudFormation stack and the scripts, for
+  anyone writing a new network template or VPC deploy script
 - [docs/splitting-the-repos.md](docs/splitting-the-repos.md) — moving values
   out of the AutoShift fork with a multi-source Application, and why that is
   one new repo rather than several

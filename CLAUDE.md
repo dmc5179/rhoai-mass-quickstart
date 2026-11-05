@@ -6,6 +6,16 @@ scripts for the cluster, AutoShift policies for everything on it.
 Read [docs/running-under-autoshift.md](docs/running-under-autoshift.md) before
 changing anything policy-related. It is the expensive knowledge.
 
+Where to start, by task:
+
+| Task | Read first |
+|---|---|
+| A new network template or VPC deploy script | [docs/aws-vpc-and-cloudformation.md](docs/aws-vpc-and-cloudformation.md) - the template-to-script contract |
+| Anything policy-related | [docs/running-under-autoshift.md](docs/running-under-autoshift.md) |
+| Building a fresh cluster end to end | [docs/aws.md](docs/aws.md), [docs/prerequisites.md](docs/prerequisites.md) |
+| Mirroring for a disconnected install | `disconnected/imageset-config-rhoai-3.5.2-ocp4.2{1,2}.yaml` (header comments) |
+| Every script and setting | [docs/reference.md](docs/reference.md) |
+
 ## Two repositories
 
 | | |
@@ -17,6 +27,36 @@ changing anything policy-related. It is the expensive knowledge.
 `$AUTOSHIFT_DIR` does nothing until it is committed and pushed. Values files
 are the opposite — read locally by helm at install time, so they need a
 `bootstrap`, not a push.
+
+## The AWS network is its own CloudFormation stack
+
+`scripts/10-deploy-cluster.sh` creates `cloudformation/01_vpc.yaml` as stack
+`VPC_STACK_NAME` (or reuses it if it exists), then
+`scripts/generate-install-config.sh` reads the stack's **outputs** to render
+`install-config.yaml`, then the installer builds the cluster **into** that VPC.
+The stack carries no `kubernetes.io/cluster/*: owned` tags, so destroying the
+cluster leaves the VPC standing; `90-destroy-cluster.sh --with-vpc` removes it.
+
+**The stack outputs are the interface.** A new template that exposes the same
+output names - `InstallConfigSubnets` (a paste-ready `platform.aws.vpc.subnets`
+block with all five subnet roles), `AvailabilityZone`, `VpcId`,
+`PrivateSubnetId` - works with every downstream script unchanged.
+
+Traps for anyone changing the network:
+
+- `templates/install-config.yaml.aws` hardcodes `machineNetwork: 10.0.0.0/16`,
+  and nothing patches it. A VPC on another CIDR must change it too.
+- `publish: External` and `credentialsMode: Mint` are also fixed in the template.
+- With `BASE_DOMAIN=""` the domain is auto-detected from **public** Route 53
+  zones only, and must be exactly one. A private zone needs it set explicitly.
+- `--dry-run` cannot test install-config rendering: that needs the outputs of a
+  stack the dry run does not create.
+- `maas-database.sh` adds a subnet, security group and DB subnet group to the
+  VPC **outside** the stack, and nothing fully removes them, so
+  `--with-vpc` then fails on a dependency violation.
+
+Details, the disconnected-AWS requirements from the 4.22 docs, and the script
+conventions to follow: [docs/aws-vpc-and-cloudformation.md](docs/aws-vpc-and-cloudformation.md).
 
 ## Resource names ACM shadows
 
@@ -38,14 +78,20 @@ that explicitness is load-bearing, not stylistic.
 ## Phase order
 
 ```
-00-init            fetch oc, openshift-install, helm
-10-deploy-cluster  CloudFormation VPC + installer
-20-deploy-maas     imperative MaaS (superseded by policies; kept for non-AutoShift use)
-35-smoke-test
-40-lightspeed
+00-init               fetch oc, openshift-install-fips, kubectl, helm into bin/
+10-deploy-cluster     CloudFormation VPC (create or reuse), then the installer.
+                      Calls generate-install-config.sh. Refuses to run while
+                      clusters/<CLUSTER_NAME>/ is non-empty.
+20-deploy-maas        imperative MaaS (superseded by policies; kept for non-AutoShift use)
 45-autoshift-values   per-cluster values. BEFORE 50 — helm reads values at install time
-50-autoshift       bootstrap | adopt | status | refresh | uninstall
-90-destroy-cluster
+50-autoshift          bootstrap | adopt | status | refresh | uninstall
+maas-database.sh      create | status | secret | destroy. AWS RDS PostgreSQL,
+                      which maas-api will not start without. After RHOAI exists.
+maas-user.sh          create | status. The htpasswd user that mints MaaS keys.
+35-smoke-test         a real prompt end to end; mints as maas-user if it exists
+40-lightspeed
+90-destroy-cluster    [--with-vpc]. The VPC survives without the flag.
+cluster-power.sh      park or resume a cluster to stop the bill
 ```
 
 `adopt` is the irreversible step, not `bootstrap`. It activates every enabled
@@ -154,8 +200,8 @@ Several defects were found by reading these rather than by hitting them:
   causes, namespace labelling, the ClusterIP question
 - `~/workspace/offline-models/CLAUDE.md` — `LLMInferenceService` versions,
   tool-calling parsers per model, ModelCar sourcing
-- `docs/autoshift-upstream-issues.md` — twelve defects found in AutoShift,
-  nine filed as #276–#285
+- `docs/autoshift-upstream-issues.md` — defects found in AutoShift: fourteen
+  filed (#276–#285, #287–#290; #283 withdrawn), PRs #292–#294 merged, #291 open
 
 ## Conventions
 
@@ -164,4 +210,17 @@ Several defects were found by reading these rather than by hitting them:
 - Binaries are addressed by explicit path via `bin/ocp-env.sh`. PATH is never
   modified.
 - Scripts log to `logs/` through `lib-logging.sh` so a failure can be read back
-  without re-running.
+  without re-running. Call `start_logging` before any real work.
+- Source order in a script: set `ROOT`, then `cluster.env` (it requires `ROOT`),
+  then `bin/ocp-env.sh`, then `scripts/lib-logging.sh`.
+- AWS credentials and region come from `secrets/aws.env`. Anything a script
+  generates (passwords, connection URLs) goes under `secrets/` with `umask 077`.
+- Long or billable scripts take `--dry-run`, and reuse existing resources rather
+  than failing or duplicating them.
+- `yq` means **Go yq v4** (mikefarah, Fedora's `yq` RPM), not the Python yq.
+  It has no `--arg`: pass values via the environment with `strenv(V)` for strings
+  and `env(V)` for lists and numbers. It preserves comments, so a check that
+  greps its output must skip comment lines.
+- Local tool binaries in `~/.local/bin` (Vale, for instance) do not survive an
+  OS reinstall, and a missing binary whose output goes to `/dev/null` reads as a
+  clean result. Check the tool ran before trusting a zero.
