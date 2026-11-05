@@ -224,9 +224,12 @@ mirror:
   # Images no operator bundle references
   # ============================================================================
   additionalImages:
-    # vLLM runtime for the served model, pinned by digest. Matches
-    # config.openshiftAiModels[].image in the AutoShift hub values.
-    - name: registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:5800e12b2a465f15961fcf34b645d79ed4f91ec9161eab22b1205d12682183c8
+    # No vLLM runtime entry here. config.openshiftAiModels[].image in the
+    # AutoShift hub values points at the vLLM CUDA image the rhods-operator
+    # 3.5.2 bundle declares (registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:
+    # fd9540f3882b..., RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE), which mirrors with
+    # rhods-operator above. Add an entry only if the values pin a vLLM image
+    # the bundle does not carry.
     # The served model as an OCI modelcar. Matches config.openshiftAiModels[].uri.
     - name: registry.redhat.io/rhai/modelcar-granite-4-0-h-tiny-fp8-dynamic:3.0
 
