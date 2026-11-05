@@ -20,6 +20,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
+| `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
