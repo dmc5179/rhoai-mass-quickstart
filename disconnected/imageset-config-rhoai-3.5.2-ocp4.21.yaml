@@ -46,51 +46,40 @@ mirror:
               maxVersion: 3.5.2
 
         # ---------------------------------------------------------------------
-        # Red Hat Connectivity Link: API keys and rate limiting for MaaS.
-        # Required by RHOAI for Distributed Inference with llm-d.
+        # Red Hat Connectivity Link: API keys and rate limiting for MaaS, and
+        # the MCP Gateway. Required by RHOAI for Distributed Inference with llm-d.
         #
-        # PINNED, and this matters. rhcl-operator 1.4.3 declares its three
-        # dependencies with EXACT versions (olm.package.required):
-        #     authorino-operator '1.4.3'
-        #     dns-operator       '1.4.2'
-        #     limitador-operator '1.4.2'
-        # Their channel heads have since moved on (1.4.4 / 1.4.3 / 1.4.3).
-        # Mirroring heads only would leave rhcl-operator uninstallable on a
-        # disconnected cluster - "constraints not satisfiable" - and with it
-        # MaaS. oc-mirror cannot catch this; it does not resolve dependencies.
+        # 1.5 changes the packaging, and with it what has to be mirrored.
+        # rhcl-operator 1.5.0 declares NO OLM dependencies. Its one Deployment,
+        # kuadrant-operator-controller-manager, deploys the Authorino,
+        # Limitador, DNS and MCP Gateway operators itself, through its
+        # KuadrantControlPlane resource, and applies their CRDs. It takes their
+        # images from RELATED_IMAGE_* variables that are also the bundle's
+        # relatedImages (among them authorino-operator, authorino,
+        # limitador-operator, limitador, dns-operator, the mcp-gateway operator
+        # and broker, wasm-shim), and oc-mirror mirrors a bundle's
+        # relatedImages, so mirroring rhcl-operator alone brings them all.
+        # The authorino-operator, dns-operator and limitador-operator
+        # packages, which 1.4.3 required at exact versions, are not needed,
+        # and neither is the separate mcp-gateway package.
         #
-        # This is exactly the set running on the 4.22 reference cluster.
+        # wasm-shim is the one image from registry.access.redhat.com (rhcl-1/)
+        # rather than registry.redhat.io. oc-mirror mirrors it like the rest,
+        # but the cluster's mirror configuration has to cover that registry
+        # too; a rule written by hand for registry.redhat.io alone misses it.
         #
-        # dns-operator is not used at runtime here: there are no DNSPolicy
-        # resources, and the gateway hostname lives under the cluster's
-        # existing *.apps wildcard in Route 53. It is still a hard install
-        # dependency of rhcl-operator, so it must be mirrored.
-        #
-        # Newer releases exist and are deliberately not used: stable-1.4 heads
-        # at 1.4.4, and stable-1.5 at 1.5.0, which drops these
-        # olm.package.required dependencies entirely. Both are untested with
-        # this stack.
+        # stable, the package default, still heads at 1.4.3 (stable-1.4 at
+        # 1.4.4). stable-1.5 holds only rhcl-operator.v1.5.0. Because the
+        # filtered channel is not the default, defaultChannel must be set (see
+        # the rules above). 1.5 is what the AutoShift hub profile selects
+        # (connectivity-link-channel: stable-1.5).
         # ---------------------------------------------------------------------
         - name: rhcl-operator
+          defaultChannel: stable-1.5      # package default is `stable` (1.4.3)
           channels:
-            - name: stable
-              minVersion: 1.4.3
-              maxVersion: 1.4.3
-        - name: authorino-operator        # exact dependency of rhcl-operator 1.4.3
-          channels:
-            - name: stable
-              minVersion: 1.4.3
-              maxVersion: 1.4.3
-        - name: dns-operator              # exact dependency of rhcl-operator 1.4.3
-          channels:
-            - name: stable
-              minVersion: 1.4.2
-              maxVersion: 1.4.2
-        - name: limitador-operator        # exact dependency of rhcl-operator 1.4.3
-          channels:
-            - name: stable
-              minVersion: 1.4.2
-              maxVersion: 1.4.2
+            - name: stable-1.5
+              minVersion: 1.5.0
+              maxVersion: 1.5.0
 
         # ---------------------------------------------------------------------
         # Required by RHOAI 3.5 for model serving and llm-d
@@ -142,7 +131,7 @@ mirror:
         # OpenShift Lightspeed: the console assistant. Pointed at a model
         # served through this cluster's own MaaS gateway, so questions are
         # answered on local hardware. No olm.package.required dependencies,
-        # unlike Connectivity Link, so there is nothing else to pin.
+        # so there is nothing else to pin.
         # ---------------------------------------------------------------------
         - name: lightspeed-operator
           channels:
@@ -163,15 +152,6 @@ mirror:
             # 1.21.5 is the validated version. gitops-1.22 (1.22.2) exists but
             # is untested with AutoShift here.
             - name: gitops-1.21           # head 1.21.5
-
-        # ---------------------------------------------------------------------
-        # MCP Gateway (Preview). Its catalog directory is mcp-gateway-operator.
-        # Requires rhcl-operator '>=1.3.2' - a range, not an exact pin, and the
-        # pinned rhcl-operator 1.4.3 above satisfies it.
-        # ---------------------------------------------------------------------
-        - name: mcp-gateway
-          channels:
-            - name: preview               # head 0.7.1
 
         # ---------------------------------------------------------------------
         # OpenShell prerequisites

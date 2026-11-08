@@ -119,10 +119,12 @@ either:
   `olm.package.required` and `olm.constraint`. An operator that declares them
   can't be installed as a ClusterExtension.
 - **OLM v0 (Classic) does resolve dependencies on the cluster, but `oc-mirror`
-  doesn't follow them.** Connectivity Link shows this: its bundle pins
+  doesn't follow them.** Connectivity Link 1.4 showed this: its bundle pinned
   `authorino-operator`, `dns-operator` and `limitador-operator` with
-  `olm.package.required`, and we still have to list all three in the imageset
-  by hand.
+  `olm.package.required`, and we had to list all three in the imageset by
+  hand. Connectivity Link 1.5 went the other way: it declares no dependencies,
+  and its operator deploys those components itself from images listed in its
+  own bundle, which `oc-mirror` does mirror.
 
 If there is a gap, it belongs to OpenShift: whether the OpenShift disconnected
 documentation tells customers that the Gateway API needs `servicemeshoperator3`

@@ -158,8 +158,10 @@ Content this repository already has for the mirror side:
   oc-mirror v2 ImageSetConfigurations for RHOAI 3.5.2 + MaaS, dry-run validated.
   Their header comments record the non-obvious parts: Service Mesh 3 must be
   mirrored and pinned to 3.3.1 although no CSV ever appears (the ingress operator
-  installs it for the Gateway API); Connectivity Link 1.4.3 pins its three
-  dependencies to exact versions; tag-mirrored images land in an
+  installs it for the Gateway API); Connectivity Link 1.5 has no OLM
+  dependencies, so `rhcl-operator` alone brings Authorino, Limitador, DNS and
+  the MCP Gateway, but it needs `defaultChannel: stable-1.5` and its wasm-shim
+  image comes from `registry.access.redhat.com`; tag-mirrored images land in an
   ImageTagMirrorSet rather than the ImageDigestMirrorSet.
 - oc-mirror gotchas, learned here: never set `REGISTRY_AUTH_FILE` (oc-mirror v2's
   embedded registry parses every `REGISTRY_*` variable as its own config and
