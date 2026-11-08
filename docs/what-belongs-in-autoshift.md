@@ -143,6 +143,25 @@ workload (`name`, `repoUrl`, `targetRevision`, `path`, `destinationNamespace`).
 The marginal cost of workload N+1 stays a few lines of values, not a
 directory.
 
+### The hub is an exception (decided 2026-11-08)
+
+The Placement-driven ApplicationSet can't deliver to the hub itself. In the
+pull model the hub-side Application and the delivered one would be the same
+object, and registering `local-cluster` with `GitOpsCluster` doubles the Argo
+CD controller cache, which is why AutoShift excludes it. Hermes, our only
+workload today, runs on the hub.
+
+So `gitops-workloads` has two paths, chosen per workload: `target: managed`
+uses the RHACM Placement and ApplicationSet; `target: hub` has the RHACM
+policy create one Argo CD Application in the hub's own Argo CD, with no
+`local-cluster` registration. RHACM still places, enforces and reports on it.
+
+We are not waiting for RHACM's GitOps add-on. Upstream #252 says it is still
+in development, it is aimed at managed clusters rather than the hub, and
+enabling it through `GitOpsCluster` disables the push model that AutoShift's
+own systems Argo CD uses. Revisit the exception if the add-on later handles
+the hub without that side effect.
+
 ### Risks to settle on a cluster
 
 - **The hub deploying to itself.** AutoShift deliberately excludes
