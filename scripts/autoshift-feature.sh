@@ -36,7 +36,6 @@ feature_labels() {
         rhoai)      echo "openshift-ai" ;;
         maas)       echo "openshift-ai connectivity-link openshift-ai-maas openshift-ai-models leader-worker-set" ;;
         lightspeed) echo "openshift-lightspeed" ;;
-        mcp)        echo "mcp-gateway" ;;
         workloads)  echo "gitops-workloads" ;;
         users)      echo "htpasswd-users" ;;
         *)          return 1 ;;
@@ -65,7 +64,10 @@ feature_requires() {
     esac
 }
 
-ALL_FEATURES="gpu rhoai maas lightspeed mcp workloads users"
+# No "mcp" feature: the standalone mcp-gateway policy is gone. Red Hat
+# Connectivity Link 1.5 ships the MCP Gateway, so the connectivity-link label
+# in "maas" brings it whenever connectivity-link-channel is stable-1.5.
+ALL_FEATURES="gpu rhoai maas lightspeed workloads users"
 
 ACTION="${1:-}"; shift || true
 VALUES_FILE=""
@@ -129,7 +131,6 @@ LABELS = {
     "maas":       ["openshift-ai", "connectivity-link", "openshift-ai-maas",
                    "openshift-ai-models", "leader-worker-set"],
     "lightspeed": ["openshift-lightspeed"],
-    "mcp":        ["mcp-gateway"],
 }
 CONFIG   = {"maas": "openshiftAiModels"}
 REQUIRES = {"maas": ["gpu"], "lightspeed": ["maas"]}
