@@ -160,9 +160,8 @@ vale --minAlertLevel=error README.md AGENTS.md CLAUDE.md CONTRIBUTING.md docs/ p
 ```
 
 Note the lint covers `policies/` as well as `docs/`, so a policy comment is
-prose too. `rhoai-maas` currently has **14 Vale errors**, all in our own
-policies — clean those before cutting the RHOAI PR series or every one of
-them fails CI.
+prose too. `rhoai-maas` is at **0 Vale errors** (cleared 2026-11-05); keep it
+there, because every upstream PR branch is cut from it.
 
 `RedHat.Conjunctions` is the rule to expect: it rejects sentences opening with
 `So`, `And`, `But`. That one cost a round trip on upstream PR #293.
