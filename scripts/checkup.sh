@@ -30,6 +30,13 @@
 # are silently ABSENT, not just things that report failure, and it walks the
 # chain in order so the output names the first broken link rather than the
 # twenty things downstream of it.
+#
+# It also checks what this stack is pinned to, because a drifted pin looks
+# healthy too: RHOAI exactly rhods-operator.3.5.2; Connectivity Link 1.5.x with
+# its CONNLINK-1878 memory override and every KuadrantControlPlane component
+# up; MaaS switched on in the DSC; the endpoint picker fix from solution
+# 7148630; and each model's live vLLM image against the one the RHOAI bundle
+# declares.
 
 set -uo pipefail   # deliberately not -e: a failing probe is a finding
 
@@ -40,7 +47,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --section) SECTION="$2"; shift 2 ;;
         --quiet)   QUIET=1; shift ;;
-        -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '2,39p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "checkup.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -76,6 +83,63 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$1"
 head_() { [ "$QUIET" -eq 1 ] || printf '\n\033[1m%s\033[0m\n' "$1"; }
 run()  { timeout 90 "$OC" "$@" 2>/dev/null; }
 want() { [ -z "$SECTION" ] || [ "$SECTION" = "$1" ]; }
+
+# Feed "LEVEL|title|detail" lines from a probe into ok/warn/bad/info. Read from
+# a here-string, never a pipe: a pipe runs this in a subshell and the PROBLEMS
+# and FIRST_BREAK it sets would be lost.
+report() {
+    local lvl title detail
+    while IFS='|' read -r lvl title detail; do
+        case "$lvl" in
+            OK)   ok "$title" ;;
+            INFO) info "$title" ;;
+            WARN) if [ -n "$detail" ]; then warn "$title" "$detail"; else warn "$title"; fi ;;
+            BAD)  if [ -n "$detail" ]; then bad "$title" "$detail"; else bad "$title"; fi ;;
+        esac
+    done
+    return 0
+}
+
+# Scratch space for probes that compare two documents. Holds cluster JSON only.
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+
+# What this stack is pinned to. The RHOAI pin is openshift-ai-version in the
+# AutoShift hub values; the Connectivity Link minor comes from
+# connectivity-link-channel: stable-1.5.
+RHOAI_CSV_WANT="rhods-operator.3.5.2"
+RHCL_MINOR_WANT="1.5"
+RHCL_NS="openshift-operators"
+# The vLLM CUDA runtime the rhods-operator 3.5.2 bundle declares
+# (RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE). Used only if the CSV cannot be read;
+# otherwise the expected image is taken from the installed CSV itself.
+VLLM_IMAGE_FALLBACK="registry.redhat.io/rhaii/vllm-cuda-rhel9@sha256:fd9540f3882b9aae5f862eba6c295d0e9c6b43f8c17b27b179481bfa330bfbc1"
+
+SUB="subscriptions.operators.coreos.com"
+CSV="clusterserviceversions.operators.coreos.com"
+DEPLOY="deployments.apps"
+POLICY="policies.policy.open-cluster-management.io"
+DSC="datascienceclusters.datasciencecluster.opendatahub.io"
+EF="envoyfilters.networking.istio.io"
+
+# "<namespace> <installedCSV> <currentCSV>" of the RHOAI Subscription, or nothing.
+rhoai_sub() {
+    run get "$SUB" -A -o json | python3 -I -c 'import json,sys
+for s in json.load(sys.stdin)["items"]:
+    if s.get("spec",{}).get("name")=="rhods-operator":
+        st=s.get("status") or {}
+        print(s["metadata"]["namespace"], st.get("installedCSV") or "-", st.get("currentCSV") or "-")
+        break' 2>/dev/null
+}
+
+# "<name> <version> <phase>" of the Connectivity Link CSV, or nothing.
+rhcl_csv() {
+    run get "$CSV" -n "$RHCL_NS" -o json | python3 -I -c 'import json,sys
+for c in json.load(sys.stdin)["items"]:
+    if c["metadata"]["name"].startswith("rhcl-operator."):
+        print(c["metadata"]["name"], c.get("spec",{}).get("version") or "?", (c.get("status") or {}).get("phase") or "?")
+        break' 2>/dev/null
+}
 
 run get --raw /readyz >/dev/null || { echo "Error: cluster API not reachable." >&2; exit 1; }
 
@@ -176,6 +240,62 @@ if want operators; then
             fi
         done
     fi
+
+    # RHOAI pinned at exactly 3.5.2. The OperatorPolicy approves only the CSVs
+    # in its versions list, so a newer z-stream shows up as a currentCSV or an
+    # unapproved InstallPlan that never installs. That is the pin working, but
+    # it is worth seeing before someone approves it by hand.
+    read -r rns rinst rcur <<< "$(rhoai_sub)"
+    if [ -z "${rns:-}" ]; then
+        info "no rhods-operator Subscription (openshift-ai label off) — skipping RHOAI version"
+    else
+        rphase="$(run get "$CSV" "$rinst" -n "$rns" -o jsonpath='{.status.phase}')"
+        if [ "$rinst" != "$RHOAI_CSV_WANT" ]; then
+            bad "RHOAI installed CSV is '${rinst}', expected ${RHOAI_CSV_WANT}" \
+                "The hub values pin openshift-ai-version: '${RHOAI_CSV_WANT}' on stable-3.x. Check policy-openshift-ai-operator-install."
+        elif [ "$rphase" != "Succeeded" ]; then
+            bad "${RHOAI_CSV_WANT} is ${rphase:-not found} in ${rns}, not Succeeded"
+        else
+            ok "RHOAI ${RHOAI_CSV_WANT} Succeeded"
+        fi
+        pending="$( { [ "$rcur" != "-" ] && [ "$rcur" != "$rinst" ] && echo "$rcur"
+                      run get installplans.operators.coreos.com -n "$rns" -o json | python3 -I -c 'import json,sys
+for p in json.load(sys.stdin)["items"]:
+    if not p.get("spec",{}).get("approved", True):
+        for c in p["spec"].get("clusterServiceVersionNames") or []: print(c)' 2>/dev/null
+                    } | grep -vx -- "$RHOAI_CSV_WANT" | sort -u | paste -sd " ")"
+        [ -n "$pending" ] && warn "newer RHOAI CSV offered but not installed: ${pending}" \
+            "Expected while openshift-ai-version pins ${RHOAI_CSV_WANT}. Do not approve the InstallPlan by hand; move the pin in hub.yaml."
+    fi
+
+    # Connectivity Link 1.5: one CSV, and the CONNLINK-1878 memory override.
+    read -r lname lver lphase <<< "$(rhcl_csv)"
+    if [ -z "${lname:-}" ]; then
+        info "no rhcl-operator CSV in ${RHCL_NS} (connectivity-link label off) — skipping"
+    else
+        case "$lver" in
+            "${RHCL_MINOR_WANT}".*) ok "Connectivity Link ${lver} (${lname}, ${lphase})" ;;
+            *) warn "Connectivity Link is ${lver}, expected ${RHCL_MINOR_WANT}.x" \
+                    "The hub values select connectivity-link-channel: stable-${RHCL_MINOR_WANT}. On 1.4, Authorino, Limitador and DNS are separate CSVs and KuadrantControlPlane does not exist." ;;
+        esac
+        # OLM regenerates the Deployment from the CSV plus Subscription
+        # spec.config, so the Deployment is where the override has to show.
+        lim="$(run get "$DEPLOY" kuadrant-operator-controller-manager -n "$RHCL_NS" \
+               -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}')"
+        subl="$(run get "$SUB" -n "$RHCL_NS" -o json | python3 -I -c 'import json,sys
+for s in json.load(sys.stdin)["items"]:
+    if s.get("spec",{}).get("name")=="rhcl-operator":
+        print(((s["spec"].get("config") or {}).get("resources") or {}).get("limits",{}).get("memory",""))' 2>/dev/null)"
+        if [ "$lim" = "2Gi" ]; then
+            ok "kuadrant-operator-controller-manager memory limit 2Gi (CONNLINK-1878 override in place)"
+        elif [ "$subl" = "2Gi" ]; then
+            bad "kuadrant-operator-controller-manager memory limit is '${lim:-unset}' though the Subscription asks for 2Gi" \
+                "OLM has not rolled the Deployment yet. Check: oc get ${CSV} ${lname} -n ${RHCL_NS} -o jsonpath='{.status.phase}'"
+        else
+            bad "kuadrant-operator-controller-manager memory limit is '${lim:-unset}', expected 2Gi" \
+                "Without it the controller is OOMKilled on 1.5 (CONNLINK-1878). The connectivity-link policy sets it in the Subscription's spec.config.resources; check policy-rhcl-operator-install is Compliant. A hand patch to the Deployment is reset by OLM."
+        fi
+    fi
 fi
 
 # --- gpu chain --------------------------------------------------------------
@@ -225,6 +345,99 @@ if want maas; then
         dsc="$(run get datasciencecluster --no-headers | awk '{print $1}' | head -1)"
         [ -n "$dsc" ] && ok "DataScienceCluster ${dsc}" || bad "no DataScienceCluster"
 
+        # MaaS is switched on in the DSC by its own policy, which merges one
+        # field into default-dsc after policy-openshift-ai-dsc is Compliant.
+        if run get "$POLICY" policy-openshift-ai-maas-dsc -n policies-autoshift >/dev/null; then
+            pc="$(run get "$POLICY" policy-openshift-ai-maas-dsc -n policies-autoshift -o jsonpath='{.status.compliant}')"
+            case "$pc" in
+                Compliant) ok "policy-openshift-ai-maas-dsc Compliant" ;;
+                Pending)   warn "policy-openshift-ai-maas-dsc Pending" "Waits on policy-openshift-ai-dsc being Compliant." ;;
+                "")        bad "policy-openshift-ai-maas-dsc has no status" "Not placed: check the openshift-ai-maas label (see Policy placement above)." ;;
+                *)         bad "policy-openshift-ai-maas-dsc is ${pc}" ;;
+            esac
+        else
+            bad "policy-openshift-ai-maas-dsc not defined" \
+                "The AutoShift branch the hub reads predates it. Run: scripts/50-autoshift.sh refresh"
+        fi
+        ms="$(run get "$DSC" default-dsc -o jsonpath='{.spec.components.aigateway.modelsAsAService.managementState}')"
+        if [ "$ms" = "Managed" ]; then ok "default-dsc aigateway.modelsAsAService Managed"
+        else bad "default-dsc aigateway.modelsAsAService is '${ms:-unset}', expected Managed"; fi
+
+        # Connectivity Link 1.5 deploys Authorino, Limitador, DNS and the MCP
+        # Gateway itself, through a KuadrantControlPlane named 'default' that the
+        # operator owns. Status only; never edit or delete it, which cascades.
+        # The CRD's API group is looked up rather than assumed, so the resource
+        # is always addressed by its full name.
+        kcp="$(run get crd -o name | sed -n 's|^customresourcedefinition.apiextensions.k8s.io/\(kuadrantcontrolplanes\..*\)$|\1|p' | head -1)"
+        read -r _ lver _ <<< "$(rhcl_csv)"
+        if [ -z "$kcp" ]; then
+            case "${lver:-}" in
+                "${RHCL_MINOR_WANT}".*) bad "Connectivity Link ${lver} but no KuadrantControlPlane CRD" ;;
+                *) info "no KuadrantControlPlane CRD (Connectivity Link ${lver:-absent}) — skipping" ;;
+            esac
+        else
+            run get "$kcp" -A -o json > "$TMPD/kcp.json"
+            run get "$DEPLOY" -A -o json > "$TMPD/deploy.json"
+            report <<< "$(python3 -I - "$TMPD/kcp.json" "$TMPD/deploy.json" <<'PY' 2>/dev/null || echo "WARN|could not read KuadrantControlPlane status"
+import json, sys
+def load(p):
+    try: return json.load(open(p))
+    except Exception: return {"items": []}
+kcp, deps = load(sys.argv[1]), load(sys.argv[2])
+true = lambda v: str(v).lower() == "true"
+cp = [i for i in kcp.get("items", []) if i["metadata"]["name"] == "default"]
+if not cp:
+    print("BAD|no KuadrantControlPlane named default|The Kuadrant operator creates it on 1.5; check kuadrant-operator-controller-manager logs. Never create it by hand.")
+    sys.exit()
+comps = (cp[0].get("status") or {}).get("components") or []
+if not comps:
+    print("BAD|KuadrantControlPlane default has no status.components|The operator has not reconciled it yet.")
+    sys.exit()
+nr = [c.get("name", "?") for c in comps if not true(c.get("ready"))]
+print("BAD|KuadrantControlPlane components not ready: " + " ".join(nr) if nr else
+      "OK|KuadrantControlPlane default: %d components ready" % len(comps))
+crd = ["%s/%s" % (c.get("name", "?"), d.get("name", "?")) for c in comps
+       for d in (c.get("crds") or []) if not true(d.get("established"))]
+print("BAD|component CRDs not established: " + " ".join(crd) if crd else "OK|all component CRDs established")
+
+def images(x):
+    # images[] entries may be plain strings or objects; take anything image-shaped.
+    if isinstance(x, str): return {x} if "/" in x else set()
+    if isinstance(x, dict): return set().union(*[images(v) for v in x.values()]) if x else set()
+    if isinstance(x, list): return set().union(*[images(v) for v in x]) if x else set()
+    return set()
+def same(a, b):
+    return a == b or ("@" in a and "@" in b and a.split("@")[1] == b.split("@")[1])
+def dep_images(d):
+    s = d.get("spec", {}).get("template", {}).get("spec", {})
+    return [c.get("image", "") for c in (s.get("containers") or []) + (s.get("initContainers") or [])]
+def available(d):
+    cond = {c["type"]: c["status"] for c in (d.get("status") or {}).get("conditions") or []}
+    return cond.get("Available") == "True"
+
+for want in ("authorino", "limitador", "dns", "mcp"):
+    cs = [c for c in comps if want in c.get("name", "").lower()]
+    if not cs:
+        print("BAD|KuadrantControlPlane has no %s component|On Connectivity Link 1.5 it should deploy authorino, limitador, dns-operator and mcp-gateway." % want)
+        continue
+    for c in cs:
+        name, imgs = c.get("name", "?"), images(c.get("images"))
+        # Matched by the images the component reports, which needs no knowledge
+        # of the Deployment's name; the component name is only a fallback.
+        hit = [d for d in deps.get("items", []) if any(same(i, j) for i in imgs for j in dep_images(d))]
+        if not hit:
+            hit = [d for d in deps.get("items", []) if name.lower() in d["metadata"]["name"].lower()]
+        if not hit:
+            print("WARN|component %s: no Deployment found|Matched by its status images, then by name; look with: oc get deployments.apps -A | grep -i %s" % (name, want))
+            continue
+        ids = " ".join("%s/%s" % (d["metadata"]["namespace"], d["metadata"]["name"]) for d in hit)
+        down = [d["metadata"]["name"] for d in hit if not available(d)]
+        print("BAD|component %s: Deployment not Available: %s" % (name, " ".join(down)) if down else
+              "OK|component %s: %s" % (name, ids))
+PY
+)"
+        fi
+
         if run get crd kuadrants.kuadrant.io >/dev/null; then
             kr="$(run get kuadrant -A -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}')"
             if [ "$kr" = "True" ]; then ok "Kuadrant Ready"
@@ -234,6 +447,41 @@ if want maas; then
 
         gw="$(run get gateway -A --no-headers | wc -l)"
         [ "${gw:-0}" -gt 0 ] && ok "${gw} Gateway(s)" || warn "no Gateway — MaaS has no entry point"
+
+        # Red Hat solution 7148630. With Connectivity Link 1.4 or later the
+        # endpoint picker runs before the model header exists, so requests
+        # succeed but skip prefix-cache and load-aware scheduling. The MaaS fix
+        # is backported to the 3.5 branch; whether 3.5.2 carries it is read off
+        # the cluster: the fixed payload-processing EnvoyFilter has a REMOVE patch.
+        if run get crd "$EF" >/dev/null; then
+            if ! run get "$EF" payload-processing -n openshift-ingress >/dev/null; then
+                warn "no payload-processing EnvoyFilter in openshift-ingress" "maas-controller creates it; cannot tell whether the solution 7148630 fix is present."
+            elif run get "$EF" payload-processing -n openshift-ingress -o yaml | grep -q 'operation: REMOVE'; then
+                ok "payload-processing EnvoyFilter carries the endpoint picker fix (solution 7148630)"
+                run get "$EF" maas-epp-after-ipp-workaround -n openshift-ingress >/dev/null && \
+                    info "maas-epp-after-ipp-workaround is no longer needed; delete it: oc delete ${EF} maas-epp-after-ipp-workaround -n openshift-ingress"
+            elif run get "$EF" maas-epp-after-ipp-workaround -n openshift-ingress >/dev/null; then
+                ok "endpoint picker fix absent, solution 7148630 workaround EnvoyFilter applied"
+            else
+                warn "MaaS requests bypass the endpoint picker (solution 7148630)" \
+                    "This MaaS build lacks the fix: payload-processing has no 'operation: REMOVE' patch.
+                     Fix: apply the EnvoyFilter maas-epp-after-ipp-workaround (openshift-ingress, priority 20,
+                     after payload-processing's 10) from https://access.redhat.com/solutions/7148630.
+                     Run its Diagnostic Steps first; delete it after upgrading to a fixed build."
+            fi
+        fi
+
+        # Open question, not a check (solution 7143483): from 4.21.22 the ingress
+        # operator is said to stop managing the servicemeshoperator3 Subscription.
+        # Recorded here so each new cluster answers it.
+        smsub="$(run get "$SUB" -A -o json | python3 -I -c 'import json,sys
+for s in json.load(sys.stdin)["items"]:
+    if s.get("spec",{}).get("name")=="servicemeshoperator3":
+        print("%s/%s installed=%s" % (s["metadata"]["namespace"], s["metadata"]["name"], (s.get("status") or {}).get("installedCSV","-")))' 2>/dev/null | head -1)"
+        gwver="$(run get "$DEPLOY" ingress-operator -n openshift-ingress-operator \
+                 -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="GATEWAY_API_OPERATOR_VERSION")].value}')"
+        info "Service Mesh Subscription: ${smsub:-none}; ingress operator GATEWAY_API_OPERATOR_VERSION=${gwver:-unset}"
+        info "  (solution 7143483 question; see docs/rhoai-disconnected-additional-images.md)"
 
         if run get crd llminferenceservices.serving.kserve.io >/dev/null; then
             n="$(run get llminferenceservice -A --no-headers | wc -l)"
@@ -250,6 +498,53 @@ for i in json.load(sys.stdin)["items"]:
     if c.get("Ready")!="True": bad.append(i["metadata"]["name"])
 print(" ".join(bad))' 2>/dev/null)"
                 [ -z "$nr" ] && ok "all models Ready" || bad "models not Ready: ${nr}"
+
+                # The runtime actually running, against the one the installed
+                # bundle declares. config.openshiftAiModels[].image is pinned by
+                # hand and drifted once already (a 3.4.1 build under 3.5).
+                read -r rns rinst _ <<< "$(rhoai_sub)"
+                vwant=""
+                [ -n "${rns:-}" ] && vwant="$(run get "$CSV" "$rinst" -n "$rns" -o json | python3 -I -c 'import json,sys
+def walk(x):
+    if isinstance(x, dict):
+        if x.get("name") == "RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE" and x.get("value"): print(x["value"]); sys.exit()
+        for v in x.values(): walk(v)
+    elif isinstance(x, list):
+        for v in x: walk(v)
+walk(json.load(sys.stdin))' 2>/dev/null)"
+                vsrc="${rinst:-CSV}"
+                [ -n "$vwant" ] || { vwant="$VLLM_IMAGE_FALLBACK"; vsrc="the ${RHOAI_CSV_WANT} default in checkup.sh"; }
+                run get llminferenceservice -A -o json > "$TMPD/llmisvc.json"
+                for ns in $(python3 -I -c 'import json,sys
+print(" ".join(sorted({i["metadata"]["namespace"] for i in json.load(open(sys.argv[1]))["items"]})))' "$TMPD/llmisvc.json" 2>/dev/null); do
+                    run get pods -n "$ns" -o json > "$TMPD/pods-${ns}.json"
+                done
+                report <<< "$(VWANT="$vwant" VSRC="$vsrc" python3 -I - "$TMPD" <<'PY' 2>/dev/null || echo "WARN|could not compare model runtime images"
+import glob, json, os, sys
+want, src, d = os.environ["VWANT"], os.environ["VSRC"], sys.argv[1]
+digest = want.split("@", 1)[1] if "@" in want else None
+pods = [p for f in glob.glob(os.path.join(d, "pods-*.json")) for p in json.load(open(f)).get("items", [])]
+for m in json.load(open(os.path.join(d, "llmisvc.json")))["items"]:
+    name, ns = m["metadata"]["name"], m["metadata"]["namespace"]
+    mine = [p for p in pods if p["metadata"]["namespace"] == ns
+            and name in (p["metadata"].get("labels") or {}).values()]
+    seen = []
+    for p in mine:
+        ids = {s.get("name"): s.get("imageID", "") for s in (p.get("status") or {}).get("containerStatuses") or []}
+        for c in p.get("spec", {}).get("containers") or []:
+            if "vllm" in c.get("image", ""):
+                seen.append((c["image"], ids.get(c["name"], "")))
+    if not seen:
+        print("WARN|%s: no running vLLM container found|Looked for pods in %s labelled with the model name." % (name, ns))
+        continue
+    good = [i for i, iid in seen if (digest and (digest in i or digest in iid)) or i == want]
+    bad = sorted({i for i, iid in seen} - set(good))
+    if bad:
+        print("WARN|%s runs a vLLM image that is not the bundle's|running: %s  expected (%s): %s  Fix config.openshiftAiModels[].image in the hub values." % (name, " ".join(bad), src, want))
+    else:
+        print("OK|%s vLLM runtime is the bundle's (%s)" % (name, (digest or want)[:19]))
+PY
+)"
             fi
         fi
     fi
