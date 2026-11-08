@@ -100,6 +100,9 @@ start-to-finish page.
 - [docs/running-under-autoshift.md](docs/running-under-autoshift.md) — sizing
   for an ACM hub, why `adopt` is the irreversible step, and the failures that
   do not say what they are
+- [docs/deploy-rhoai-3.5.2.md](docs/deploy-rhoai-3.5.2.md) — a linear
+  runbook from a new RHDP AWS account to MaaS serving a model on RHOAI 3.5.2
+  and Connectivity Link 1.5, with the checks to run on a first deploy
 - [docs/aws-vpc-and-cloudformation.md](docs/aws-vpc-and-cloudformation.md) —
   the contract between the VPC CloudFormation stack and the scripts, for
   anyone writing a new network template or VPC deploy script
