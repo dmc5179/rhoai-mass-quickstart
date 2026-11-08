@@ -131,8 +131,11 @@ LABELS = {
     "maas":       ["openshift-ai", "connectivity-link", "openshift-ai-maas",
                    "openshift-ai-models", "leader-worker-set"],
     "lightspeed": ["openshift-lightspeed"],
+    "workloads":  ["gitops-workloads"],
+    "users":      ["htpasswd-users"],
 }
-CONFIG   = {"maas": "openshiftAiModels"}
+CONFIG   = {"maas": "openshiftAiModels", "workloads": "gitopsWorkloads",
+            "users": "htpasswdUsers"}
 REQUIRES = {"maas": ["gpu"], "lightspeed": ["maas"]}
 
 lines = open(path).read().split("\n")
