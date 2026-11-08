@@ -19,10 +19,13 @@ Our branch adds these policy directories on top of the 65 that
 
 ```
 agent-sandbox      leader-worker-set     openshift-ai-maas      osc
-connectivity-link  mcp-gateway           openshift-ai-models    rhbk
-gpu-nodes          model-egress          openshift-lightspeed   openshift-ai
-gitops-workloads   htpasswd-users        nvidia-gpu-operator (certified)
+connectivity-link  model-egress          openshift-ai-models    rhbk
+gpu-nodes          htpasswd-users        openshift-lightspeed   openshift-ai
+gitops-workloads   nvidia-gpu-operator (certified)
 ```
+
+`mcp-gateway` was dropped (2026-11-08): Red Hat Connectivity Link 1.5 ships the
+MCP Gateway, so `connectivity-link` on channel `stable-1.5` provides it.
 
 Every one of those is a *platform capability*: an operator, a
 DataScienceCluster component, a gateway, a MachineSet shape. That is what
