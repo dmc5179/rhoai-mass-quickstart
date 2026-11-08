@@ -142,17 +142,20 @@ mirror:
         # AutoShift platform: needed only when deploying through AutoShift.
         # ---------------------------------------------------------------------
         - name: advanced-cluster-management
+          defaultChannel: release-2.17    # 4.22 catalog default is now release-5.0
           channels:
             - name: release-2.17          # head 2.17.3
         - name: multicluster-engine       # dependency of advanced-cluster-management
+          defaultChannel: stable-2.17     # 4.22 catalog default is now stable-5.0
           channels:
             - name: stable-2.17           # head 2.17.3
         - name: openshift-gitops-operator
-          defaultChannel: gitops-1.21     # package default is `latest`
+          defaultChannel: gitops-1.22     # package default is `latest`
           channels:
-            # 1.21.5 is the validated version. gitops-1.22 (1.22.2) exists but
-            # is untested with AutoShift here.
-            - name: gitops-1.21           # head 1.21.5
+            # Matches the hub's gitops-channel (gitops-1.22), taken from upstream
+            # AutoShift in the 2026-11-07 merge. A mirror on another channel
+            # leaves the Subscription unresolvable on a disconnected cluster.
+            - name: gitops-1.22           # head 1.22.2
 
         # ---------------------------------------------------------------------
         # OPTIONAL. AutoShift policies exist for these but they are not enabled
