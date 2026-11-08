@@ -119,6 +119,9 @@ policy and fold it into #282's fix if upstream takes that direction.
 
 ## Decisions needed before starting
 
+Decided 2026-11-08: the control plane never uses spot, and at least 2 workers
+never use spot. Decision 1 below is therefore settled.
+
 1. **On-demand floor for workers.** RHACM, GitOps, RHOAI, Connectivity Link
    and the MaaS API all run on workers. Suggestion: 2 on-demand `m6i.4xlarge`
    plus 1–2 spot, rather than all spot.
