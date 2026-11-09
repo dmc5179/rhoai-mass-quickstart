@@ -31,7 +31,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 
 ```
 00-init.sh          [--dir <path>] [--channel <name>] [--force]
-10-deploy-cluster.sh [--dry-run] [--log-level <level>]
+10-deploy-cluster.sh [--dry-run] [--log-level <level>] [--fips | --no-fips]
 20-deploy-maas.sh   <any setup-maas.sh flag>
 45-autoshift-values.sh [--name <mc>] [--clusterset <s>] [--replicas N]
                     [--instance-type <t>] [--spot] [--stdout] [--force]
@@ -88,6 +88,8 @@ A log with no `RESULT` footer means the run is still going, or was killed.
 | `PLATFORM` | `aws` | `aws`, `ibmcloud`, `baremetal` |
 | `CLUSTER_NAME` | `rhoai` | |
 | `BASE_DOMAIN` | *(empty)* | AWS: auto-detected. IBM/bare metal: required. |
+| `FIPS` | `true` | Nodes in FIPS mode. Install time only. `--fips` / `--no-fips` on phase 10 override it for one run. |
+| `FIPS_SKIP_HOST_CHECK` | `true` | Lets phase 10 run from a host that is not in FIPS mode by setting `OPENSHIFT_INSTALL_SKIP_HOSTCRYPT_VALIDATION`. A test cluster, not a compliant one; `false` makes phase 10 stop instead. |
 | `MAAS_MODEL` | `auto` | pin it; `auto` downgrades silently |
 | `CLUSTER_DIR` | `${ROOT}/clusters/${CLUSTER_NAME}` | installer state |
 | `PULL_SECRET_FILE` | `${ROOT}/secrets/pull-secret.json` | |

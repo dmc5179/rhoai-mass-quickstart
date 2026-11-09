@@ -53,8 +53,27 @@ source bin/ocp-env.sh
 ```
 
 The installer binary is named `openshift-install-fips` because that is what
-the RHEL 9 archive ships. It is the ordinary installer unless the host is in
-FIPS mode.
+the RHEL 9 archive ships. It is the FIPS-capable build, and the only one that
+can install a cluster with `fips: true`.
+
+### FIPS
+
+`FIPS="true"` in `cluster.env` is the default: the nodes boot in FIPS mode.
+It can only be chosen at install time. `--no-fips` on phase 10 builds one
+cluster without it.
+
+OpenShift 4.22 supports a FIPS install only when the installer runs on a
+RHEL 9 host that is itself in FIPS mode, and the installer enforces it. From
+any other host (a Fedora workstation, or RHEL without FIPS) phase 10 either
+stops with that reason (`FIPS_SKIP_HOST_CHECK="false"`), or, with the default
+`FIPS_SKIP_HOST_CHECK="true"`, sets `OPENSHIFT_INSTALL_SKIP_HOSTCRYPT_VALIDATION=1`
+and carries on. The nodes still run in FIPS mode, so the cluster is good for
+finding what breaks under FIPS, but its initial keys and certificates come from
+a non-FIPS host: it is not a compliant FIPS install. For one that is, run phase
+10 from a RHEL 9 machine in FIPS mode.
+
+To check a running cluster: `oc debug node/<node> -- cat /proc/sys/crypto/fips_enabled`
+prints `1`, and MachineConfigs `99-master-fips` and `99-worker-fips` exist.
 
 ## 3. Build the cluster
 

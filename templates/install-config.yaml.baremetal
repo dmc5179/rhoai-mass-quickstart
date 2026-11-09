@@ -48,6 +48,7 @@ platform:
     ingressVIPs:
     - CHANGEME
 publish: External
+# Set from FIPS in cluster.env by scripts/generate-install-config.sh.
 fips: false
 pullSecret: ''
 sshKey: ''

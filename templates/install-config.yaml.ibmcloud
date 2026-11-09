@@ -49,6 +49,7 @@ platform:
     # the network to the cluster lifecycle - unlike the AWS path, where the VPC
     # outlives the cluster.
 publish: External
+# Set from FIPS in cluster.env by scripts/generate-install-config.sh.
 fips: false
 pullSecret: ''
 sshKey: ''

@@ -271,16 +271,21 @@ trap cleanup_partial EXIT
 # handler resolved (AWS auto-detects it from Route 53).
 # strenv keeps the pull secret a STRING. env() would parse its JSON into a YAML
 # map, which the installer rejects - pullSecret must be the JSON text itself.
-V_DOMAIN="$BASE_DOMAIN" V_NAME="$CLUSTER_NAME" \
+case "${FIPS:-}" in
+    true|false) ;;
+    *) echo "Error: FIPS must be true or false (got '${FIPS:-}'); see cluster.env." >&2; exit 1 ;;
+esac
+V_FIPS="$FIPS" V_DOMAIN="$BASE_DOMAIN" V_NAME="$CLUSTER_NAME" \
 V_PS="$(tr -d '\n' < "$PULL_SECRET_FILE")" V_KEY="$(cat "$SSH_KEY_FILE")" \
 yq -i '
-      .baseDomain = strenv(V_DOMAIN)
+      .fips = env(V_FIPS)
+    | .baseDomain = strenv(V_DOMAIN)
     | .metadata.name = strenv(V_NAME)
     | .pullSecret = strenv(V_PS)
     | .sshKey = strenv(V_KEY)' \
     "$OUTPUT_FILE"
 
-echo "    baseDomain=${BASE_DOMAIN} cluster=${CLUSTER_NAME}"
+echo "    baseDomain=${BASE_DOMAIN} cluster=${CLUSTER_NAME} fips=${FIPS}"
 
 # Nothing should reach the installer with a placeholder still in it. Comments
 # are excluded: Go yq preserves the template's comments, and those mention

@@ -10,7 +10,12 @@
 # GPU machine sets are NOT created here. The gpu-nodes AutoShift policy owns
 # them from phase 50 onwards; see the note at step 4 below.
 #
-# Usage: scripts/10-deploy-cluster.sh [--dry-run] [--log-level <level>]
+# Usage: scripts/10-deploy-cluster.sh [--dry-run] [--log-level <level>] [--fips | --no-fips]
+#
+#   --fips / --no-fips  Override FIPS from cluster.env for this run. FIPS mode
+#                       can only be chosen at install time. See cluster.env for
+#                       the RHEL-in-FIPS-mode host requirement and
+#                       FIPS_SKIP_HOST_CHECK.
 #
 # Everything printed is also written to logs/deploy-<platform>-<timestamp>.log,
 # so a failed run can be read back afterwards. The installer runs at debug
@@ -23,6 +28,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
+FIPS_FLAG=""
 LOG_LEVEL="${LOG_LEVEL:-debug}"
 
 # Kept intact for the logging re-exec below, which has to hand the child the
@@ -33,13 +39,19 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run)   DRY_RUN=1; shift ;;
         --log-level) LOG_LEVEL="$2"; shift 2 ;;
-        -h|--help)   sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --fips)      FIPS_FLAG=true; shift ;;
+        --no-fips)   FIPS_FLAG=false; shift ;;
+        -h|--help)   sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "10-deploy-cluster.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
 
-# cluster.env first: PLATFORM decides which credential file is needed.
+# cluster.env first: PLATFORM decides which credential file is needed. A
+# --fips/--no-fips flag wins over it, and is exported so that
+# generate-install-config.sh, which sources cluster.env again, sees the same.
+[ -n "$FIPS_FLAG" ] && export FIPS="$FIPS_FLAG"
 . "${ROOT}/cluster.env"
+export FIPS
 . "${ROOT}/bin/ocp-env.sh"
 
 # Tee everything into a timestamped log, before any real work, so a failure
@@ -105,6 +117,41 @@ if [ "$PLATFORM" != "baremetal" ]; then
         echo "               sudo tee /etc/sysctl.d/99-openshift-installer.conf" >&2
         exit 1
     fi
+fi
+
+# FIPS. The installer checks that the host it runs on matches the cluster:
+# with `fips: true` it stops unless this machine is in FIPS mode, and it says
+# so only after the VPC exists. Check here first, and either stop with the
+# reason or, with FIPS_SKIP_HOST_CHECK, tell the installer to skip the check.
+case "$FIPS" in
+    true|false) ;;
+    *) echo "Error: FIPS must be true or false (got '${FIPS}'); see cluster.env." >&2; exit 1 ;;
+esac
+if [ "$FIPS" = "true" ]; then
+    case "$(basename "$OPENSHIFT_INSTALL")" in
+        openshift-install-fips) ;;
+        *) echo "Error: FIPS=true needs the FIPS-capable installer (openshift-install-fips)," >&2
+           echo "       but bin/ocp-env.sh points at ${OPENSHIFT_INSTALL}. Re-run scripts/00-init.sh." >&2
+           exit 1 ;;
+    esac
+    host_fips="$(cat /proc/sys/crypto/fips_enabled 2>/dev/null || echo 0)"
+    if [ "$host_fips" = "1" ]; then
+        echo "==> FIPS: cluster in FIPS mode; this host is in FIPS mode too (supported install)"
+    elif [ "$FIPS_SKIP_HOST_CHECK" = "true" ]; then
+        export OPENSHIFT_INSTALL_SKIP_HOSTCRYPT_VALIDATION=1
+        echo "==> FIPS: cluster in FIPS mode; this host is NOT (fips_enabled=${host_fips})"
+        echo "    FIPS_SKIP_HOST_CHECK=true: setting OPENSHIFT_INSTALL_SKIP_HOSTCRYPT_VALIDATION=1."
+        echo "    The nodes boot in FIPS mode, but the install is not compliant: its initial keys"
+        echo "    and certificates are made on a non-FIPS host. Fine for testing, not for an audit."
+    else
+        echo "Error: FIPS=true, but this host is not in FIPS mode (fips_enabled=${host_fips})." >&2
+        echo "       OpenShift 4.22 requires the installer to run on a RHEL 9 host in FIPS mode." >&2
+        echo "       Run phase 10 from such a host, or for a test cluster set" >&2
+        echo "       FIPS_SKIP_HOST_CHECK=true, or deploy with --no-fips." >&2
+        exit 1
+    fi
+else
+    echo "==> FIPS: off"
 fi
 
 # --- 1. network -------------------------------------------------------------
