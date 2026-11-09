@@ -68,6 +68,30 @@ region:
 It decides which zone (`VPC_AZ`) and which instance types to use before
 phase 10. The VPC is single-AZ by design, so the zone choice matters.
 
+**Done (2026-11-09).** The script also reports the account's spot vCPU
+quotas, because AWS scores placement against quota as well as capacity, and
+reads the zone from the VPC stack when `VPC_AZ` is empty. First reading, on
+the RHDP account in us-east-2 (zone us-east-2a from stack `rhoai-vpc`):
+
+| | On-demand | Spot, us-east-2a | Placement score (a / b / c) |
+|---|---|---|---|
+| m6i.4xlarge | $0.768/h | $0.262 (-66%) | 1 / 1 / 1 |
+| m6a.4xlarge | $0.691/h | $0.220 (-68%) | 1 / 1 / 1 |
+| m7i.4xlarge | $0.806/h | $0.238 (-70%) | 2 / 3 / 2 |
+| g6.xlarge | $0.805/h | $0.424 (-47%) | 1 / 1 / 1 |
+| g5.xlarge | $1.006/h | $0.549 (-45%) | 1 / 1 / 1 |
+
+Quotas: 1152 standard spot vCPUs and 64 G/VT, both far above what the plan
+requests, so the low scores are spot capacity, not account limits. With
+three workers the plan's rule (two stay on-demand) leaves one spot worker:
+$369/month saved on EC2, or $647/month with the GPU node on spot too, out of
+$3110/month all on-demand. Parking saves more than either for idle hours.
+
+What it means for step 1: the discount is real, but a score of 1 means a
+spot request in us-east-2 is unlikely to be filled right now, and a spot
+MachineSet has no fallback. m7i.4xlarge in us-east-2b scores best (3). Re-run
+before deciding; scores move.
+
 ### Step 1: spot workers in AutoShift (the RHACM way)
 
 Add spot workers through a policy rather than a script, so RHACM owns them:

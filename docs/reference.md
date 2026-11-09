@@ -23,6 +23,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
 | `cluster-users.sh` | Create, update or remove named htpasswd logins for the people using the cluster (`apply john paul [--admin]`, `remove`, `status`). Prints the passwords to send; keeps them in `secrets/cluster-users.env`; adds the users to `maas-users` (and `cluster-admins` with `--admin`) in the hub values. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
+| `spot-check.sh` | Read-only: spot vs on-demand prices, spot placement scores per zone, the account's spot vCPU quotas, and the hourly cost of the default layout with and without spot workers and GPU. Run it before phase 10 to choose `VPC_AZ` and instance types (`--workers`, `--gpus`, `--dry-run`). |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
 
@@ -40,6 +41,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 50-autoshift.sh     {bootstrap|adopt|status|uninstall}
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
 cluster-power.sh    {stop|start|status} [--wait]
+spot-check.sh       [--workers <type,...>] [--gpus <type,...>] [--dry-run]
 logs.sh             [N] | --failed | --last
 ```
 
