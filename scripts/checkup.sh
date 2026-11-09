@@ -665,6 +665,7 @@ if want workloads; then
                 ok "OpenShell provider CronJob last succeeded at ${last}"
             fi
         fi
+        info "End to end (creates a throwaway sandbox, spends one chat completion): scripts/openshell-smoke-test.sh"
     fi
 fi
 

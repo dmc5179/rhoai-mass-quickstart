@@ -20,6 +20,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
 | `hermes-smoke-test.sh` | Prove the Hermes path: pod Ready, MaaS key unexpired, Open WebUI holding the Hermes API key, then one agent turn that must call a tool. Reports the tool, its result and the answer. `--dry-run` skips the turn. |
+| `openshell-smoke-test.sh` | Prove the OpenShell path: gateway Ready and CLI connected, then a throwaway sandbox from the `rhoai-maas` template and provider that must hold `OPENAI_BASE_URL` and only a key placeholder, list the models, get one chat completion, have the placeholder refused at another host, and trust the cluster ingress signer. Deletes the sandbox on every exit. `--dry-run` checks only the gateway. |
 | `openshell-cli.sh` | Run the OpenShell CLI against the cluster's gateway from a pod in the cluster, so no `openshell` binary is needed locally. `-- <args>` runs one command (`--keep` leaves the pod for the next call; `--stdin` passes stdin through), `shell` opens an interactive shell, `delete` removes the pod, `--dry-run` prints the pod spec. The pod runs the CLI image at the gateway's own tag and signs in with the gateway's mTLS client bundle, so it needs a cluster admin's kubeconfig. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
@@ -41,6 +42,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
 hermes-smoke-test.sh [--dry-run] [--prompt "..."]
+openshell-smoke-test.sh [--dry-run] [--model <id>] [--keep-cli]
 openshell-cli.sh    [--keep] [--stdin] -- <openshell args> | shell | delete | --dry-run
 40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
 50-autoshift.sh     {bootstrap|adopt|status|uninstall}
@@ -79,6 +81,7 @@ scripts/logs.sh --last     # path of the newest log
 | `maas-verify` | `30-verify-maas.sh` |
 | `smoke-test` | `35-smoke-test.sh` |
 | `hermes-smoke-test` | `hermes-smoke-test.sh` |
+| `openshell-smoke-test` | `openshell-smoke-test.sh` |
 | `openshell-cli` | `openshell-cli.sh` (not `shell`, which is interactive) |
 | `lightspeed` | `40-lightspeed.sh` |
 | `autoshift` | `50-autoshift.sh` |
