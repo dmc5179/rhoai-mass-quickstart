@@ -6,7 +6,7 @@
 # Usage: scripts/checkup.sh [--section <name>] [--quiet]
 #
 # Options:
-#   --section <name>  Run one section only: cluster, autoshift, policies,
+#   --section <name>  Run one section only: cluster, autoshift, policies, workloads,
 #                     operators, gpu, maas, load
 #   --quiet           Only print problems and the summary
 #
@@ -550,6 +550,67 @@ for m in json.load(open(os.path.join(d, "llmisvc.json")))["items"]:
 PY
 )"
             fi
+        fi
+    fi
+fi
+
+# --- workloads: Hermes agent and Open WebUI --------------------------------
+# Only when their policies are placed. Hermes mints its MaaS key once, at pod
+# start, so a pod that has run longer than its key's TTL can no longer reach
+# the model until it restarts; that is checked here from the bootstrap log.
+# Hermes logs no tool calls at default verbosity: the tool loop is recorded in
+# its state.db, not in the pod log.
+if want workloads; then
+    PL="$(run get policy -n "$(run get managedcluster --no-headers | awk '{print $1}' | head -1)" --no-headers)"
+    if grep -q "policy-hermes-agent" <<<"$PL"; then
+        head_ "Workloads: Hermes agent and Open WebUI"
+        hns="$(run get deploy -A -l app.kubernetes.io/name=hermes-agent -o jsonpath='{.items[0].metadata.namespace}')"
+        hns="${hns:-hermes}"
+        for p in policy-hermes-agent-access policy-hermes-agent policy-hermes-agent-ready \
+                 policy-open-webui policy-open-webui-ready; do
+            st="$(awk -v p="$p" '$1 ~ "\\."p"$" {print $3}' <<<"$PL")"
+            [ -z "$st" ] && continue
+            [ "$st" = "Compliant" ] && ok "${p} Compliant" || bad "${p} ${st}"
+        done
+        hp="$(run get pods -n "$hns" -l app.kubernetes.io/name=hermes-agent -o name | head -1)"
+        if [ -z "$hp" ]; then
+            bad "no hermes-agent pod in ${hns}"
+        else
+            ready="$(run get "$hp" -n "$hns" -o jsonpath='{.status.containerStatuses[0].ready}')"
+            [ "$ready" = "true" ] && ok "hermes-agent pod Ready (${hp#pod/})" || bad "hermes-agent pod not Ready (${hp#pod/})"
+            hlog="$(run logs "$hp" -n "$hns" --all-containers --tail=-1)"
+            mint="$(grep -m1 -o '\[bootstrap\] minted MaaS key[^)]*)' <<<"$hlog" || true)"
+            if [ -n "$mint" ]; then
+                ok "${mint#\[bootstrap\] }"
+                ttl="$(sed -n 's/.*ttl \([0-9]*\)h.*/\1/p' <<<"$mint")"
+                started="$(run get "$hp" -n "$hns" -o jsonpath='{.status.startTime}')"
+                if [ -n "$ttl" ] && [ -n "$started" ]; then
+                    age_h=$(( ( $(date +%s) - $(date -d "$started" +%s) ) / 3600 ))
+                    left=$(( ttl - age_h ))
+                    if [ "$left" -le 0 ]; then
+                        bad "Hermes MaaS key expired ${age_h}h after pod start (ttl ${ttl}h)" \
+                            "Restart it: oc rollout restart deployment/hermes-agent -n ${hns}"
+                    elif [ "$left" -le 72 ]; then
+                        warn "Hermes MaaS key expires in about ${left}h (pod ${age_h}h old, ttl ${ttl}h)" \
+                            "Restart before then: oc rollout restart deployment/hermes-agent -n ${hns}"
+                    else
+                        ok "Hermes MaaS key valid for about ${left}h more"
+                    fi
+                fi
+            elif grep -q '403' <<<"$hlog"; then
+                bad "Hermes could not mint a MaaS key (403)" \
+                    "Its ServiceAccount group must be in the model's accessGroups and the subscription's owner groups."
+            else
+                warn "no MaaS key mint in the hermes-agent log yet"
+            fi
+            info "Tool calls are not logged at default verbosity; Hermes records them in its state.db."
+        fi
+        owns="$(run get deploy -A -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].metadata.namespace}')"
+        if [ -n "$owns" ]; then
+            route="$(run get route -n "$owns" -o jsonpath='{.items[0].spec.host}')"
+            avail="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].status.availableReplicas}')"
+            [ "${avail:-0}" -ge 1 ] && ok "Open WebUI available at https://${route}" \
+                || bad "Open WebUI not available" "If its pod is in CreateContainerConfigError, the open-webui-admin Secret is missing."
         fi
     fi
 fi
