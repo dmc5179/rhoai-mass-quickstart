@@ -2,9 +2,9 @@
 
 A linear runbook. It starts when a new Red Hat Demo Platform (RHDP) **AWS
 Blank Open Environment** arrives and ends with MaaS serving a model,
-`scripts/checkup.sh` reporting no problems, and the Hermes agent answering
-through Open WebUI. Run every block from the root of
-this repository, in order.
+`scripts/checkup.sh` reporting no problems, the Hermes agent answering
+through Open WebUI, and an OpenShell sandbox calling the model. Run every block
+from the root of this repository, in order.
 
 The stack it builds:
 
@@ -15,6 +15,8 @@ The stack it builds:
 | OpenShift GitOps | `gitops-1.22` | AutoShift hub values |
 | RHOAI | `rhods-operator.3.5.2`, channel `stable-3.x` | `openshift-ai-version` in `hub.yaml` |
 | Connectivity Link | 1.5 (`stable-1.5`) | `connectivity-link-channel` in `hub.yaml` |
+| OpenShell | `v0.1.6-rhaiv.4`, chart 0.1.6 (Developer Preview) | `openshell-version` in `hub.yaml`; chart pin in the fork |
+| Red Hat build of Agent Sandbox | 0.9.0 (`preview-0.9`, Technology Preview) | `agent-sandbox-channel` in `hub.yaml` |
 
 Everything on the cluster arrives as RHACM policies from the AutoShift fork
 (`$AUTOSHIFT_DIR`, branch `rhoai-maas`). Read
@@ -448,6 +450,175 @@ reports a key that expired or a renewal more than two hours overdue.
 Deleting the `hermes` or `open-webui` namespace deletes Hermes' memory and
 skills, or Open WebUI's users and chats. Turning a label off does not;
 `pruneObjectBehavior: None` leaves everything in place.
+
+## 13. OpenShell
+
+OpenShell runs AI agents in isolated sandboxes: kernel-enforced filesystem,
+process and network policy around each one, and credentials the agent never
+sees. It arrives as policies from the fork: `agent-sandbox` installs the Red
+Hat build of Agent Sandbox, and `community/openshell` deploys the OpenShell
+gateway and, with `openshell-maas`, gives sandboxes governed access to the MaaS
+model. As with step 12 there is nothing to run: the policies order themselves
+(prereqs, then namespace, gateway and gateway-ready, then the MaaS provider
+once `policy-openshell-maas-provider` sees the model Ready). This section is how
+to check it and what to expect.
+
+OpenShell is a **Developer Preview** in Red Hat OpenShift AI 3.5 ("not
+supported for production environments"), on Red Hat-built images from
+`quay.io/opendatahub`. Agent Sandbox is a **Technology Preview**. Neither is
+FIPS-compliant: see [FIPS](#fips).
+
+### What turns it on
+
+All in the `rhoai-maas` hub values (`autoshift/values/clustersets/hub.yaml`):
+
+| Setting | This build | Why |
+|---|---|---|
+| labels `agent-sandbox`, `agent-sandbox-channel` | `'true'`, `preview-0.9` | The Sandbox API the gateway creates sandboxes through. Needs OpenShift 4.22.2 or later on 4.22 |
+| label `cert-manager` | `'true'` | Issues the gateway's TLS and the CLI's mTLS client certificate |
+| labels `openshell`, `openshell-version` | `'true'`, `v0.1.6-rhaiv.4` | The gateway, and the image tag for gateway, supervisor, sandbox runtime and CLI. The tag must come from the same upstream release as the chart the policy pins (0.1.6) |
+| label `openshell-maas` | `'true'` | The `rhoai-maas` provider profile, provider and sandbox template, kept current by a CronJob |
+| `config.openshell.maas.model` | `granite-4-tiny-gpu` | A model **name** from `openshiftAiModels.models`. The gateway URL and the `<model>-default` subscription are derived from it |
+| `config.openshell.maas.keyTtl`, `renewBefore` | defaults `720h`, `168h` | The key's lifetime and renewal window. RHOAI 3.5.2 refuses keys longer than `2160h` (90 days) |
+| model `accessGroups` | includes `system:serviceaccounts:openshell` | The CronJob mints the key with its ServiceAccount; without this group maas-api refuses it with a 403. Sandboxes get no ServiceAccount token, so this does not let a sandbox mint keys |
+
+Sandboxes draw on the same `tokenRateLimit` as Hermes and everyone else using
+the model. The autoshift chart refuses to render if `openshell` is on without
+`agent-sandbox` and `cert-manager`, or `openshell-maas` without
+`openshift-ai-maas`, `openshift-ai-models` and the model.
+
+### Turning it on for the first time
+
+In this build both labels are on, so `adopt` brings up everything, and the
+dependencies order it. On a cluster getting OpenShell for the first time, or
+after an `openshell-version` change, enable it in two steps instead, so a
+gateway problem is found before anything depends on it:
+
+1. `openshell` and `agent-sandbox` (with `openshell-maas: 'false'`). Wait for
+   `policy-openshell-gateway-ready` to be Compliant, then prove a sandbox
+   starts:
+
+   ```bash
+   scripts/openshell-smoke-test.sh --dry-run
+   scripts/openshell-cli.sh -- sandbox create --name hello --no-tty --detach -- sleep 300
+   scripts/openshell-cli.sh -- sandbox exec hello --no-tty -- sh -c 'id; head -2 /etc/os-release'
+   scripts/openshell-cli.sh -- sandbox delete hello
+   ```
+
+   The first sandbox is what pulls the supervisor and sandbox runtime images,
+   so a wrong tag or a missing mirror shows up here and nowhere earlier.
+
+2. `openshell-maas`. Then the full smoke test below.
+
+### Check it
+
+```bash
+"$OC" get policies.policy.open-cluster-management.io -n policies-autoshift | grep -E 'openshell|agent-sandbox'
+```
+
+All seven Compliant: `policy-agent-sandbox-operator-install`,
+`policy-openshell-prereqs`, `-namespace`, `-gateway`, `-gateway-ready`,
+`-maas-provider` and `-maas-provider-ready`. `-maas-provider-ready` waits for
+the CronJob's first successful run, up to 15 minutes; to run it now:
+
+```bash
+"$OC" -n openshell create job openshell-maas-provider-manual --from=cronjob/openshell-maas-provider
+"$OC" -n openshell logs -f job/openshell-maas-provider-manual
+```
+
+```
+[maas-provider] imported provider profile rhoai-maas
+[maas-provider] created sandbox template rhoai-maas
+[maas-provider] minting a new key: provider rhoai-maas does not exist
+[maas-provider] provider rhoai-maas has a new key, valid until <date>
+```
+
+Later runs print `nothing to do: key valid until <date>` and mint nothing.
+Delete the manual job afterwards.
+
+Then the whole path, end to end:
+
+```bash
+scripts/openshell-smoke-test.sh
+```
+
+It creates a throwaway sandbox, checks it holds `OPENAI_BASE_URL` and only a key
+placeholder, lists the models, gets one chat completion, confirms the
+placeholder is refused at another host and that the sandbox trusts the cluster
+ingress signer, then deletes the sandbox. `scripts/checkup.sh` reports the
+policies, the gateway pod, the key's expiry and the CronJob's last success,
+read-only.
+
+For anything else, the CLI runs in a throwaway pod, so nothing has to be
+installed locally:
+
+```bash
+scripts/openshell-cli.sh -- status
+scripts/openshell-cli.sh shell          # interactive; the CLI is `openshell`
+scripts/openshell-cli.sh delete         # remove a pod left by shell or --keep
+```
+
+It signs in with the gateway's mTLS client bundle, which is a platform
+administrator while the gateway has no OIDC, and only a cluster administrator
+can read it. Multi-user access is not set up; see
+[openshell-multi-user-design.md](openshell-multi-user-design.md).
+
+### Using the model from a sandbox
+
+Create sandboxes with both the template and the provider:
+
+```bash
+scripts/openshell-cli.sh -- sandbox create --name agent \
+  --template rhoai-maas --provider rhoai-maas --no-tty --detach -- sleep 3600
+```
+
+The provider puts a placeholder in `OPENAI_API_KEY`, and the sandbox proxy
+swaps in the real key only on requests to the MaaS gateway, under `/v1`, from an
+allowed program (`config.openshell.maas.binaries`; curl, Python and Node by
+default). The template sets `OPENAI_BASE_URL`. Both are needed because OpenShell
+0.1.6 does not put a provider's configuration values into the sandbox
+environment, only its credentials. The OpenAI SDK then works unchanged; the
+request model ID is `publishers/llm/models/granite-4-tiny-gpu`.
+
+A new sandbox can reach nothing else: the default policy allows no egress.
+
+### Upgrades
+
+The gateway StatefulSet is enforced `mustonlyhave`, the rest of the chart
+`musthave`. Changing `openshell-version` therefore rolls the gateway like any
+other change, with no manual step. The chart version is pinned in the fork's
+`policies/community/openshell/manifests/chart/kustomization.yaml` and moves
+with the tag: `v0.1.6-rhaiv.N` belongs with chart `0.1.6`. Sandboxes keep
+running across a gateway restart; a changed ingress signer reaches them only
+after each is stopped and started.
+
+### FIPS
+
+Not compliant, and not supported on FIPS-mandated clusters. Red Hat's own
+`check-payload` scan fails all four OpenShell images: they carry their own
+cryptography (AWS-LC and ring) rather than the RHEL FIPS module. The RHOAI 3.6
+Technology Preview excludes FIPS-mandated clusters, and FIPS is targeted for
+RHOAI 3.7 (RHAISTRAT-2717). The Agent Sandbox CSV declares itself not
+FIPS-compliant. On a FIPS-mode test cluster OpenShell is expected to work, but
+that is a functional test, not compliance.
+
+### When it goes wrong
+
+| Symptom | Cause |
+|---|---|
+| StatefulSet `openshell` at 0/1, `FailedCreate ... unable to validate against any security context constraint` with `fsGroup` or `runAsUser` 1000 | The chart's fixed UID reached the cluster. The policy removes it with a patch; a live StatefulSet created before that fix keeps it under `musthave`. Delete the StatefulSet once and the policy recreates it |
+| `policy-openshell-prereqs` NonCompliant | Its message names what is missing: the Sandbox API (is `agent-sandbox` on and its CSV `Succeeded`?), the cert-manager CRDs, or a default StorageClass |
+| Provider job: `mint rejected or unreachable, HTTP 403` | The model's `accessGroups` lack `system:serviceaccounts:openshell` |
+| `OPENAI_BASE_URL` empty in a sandbox | Created without `--template rhoai-maas`, or the template does not exist yet. The CronJob creates it; check with `scripts/openshell-cli.sh -- sandbox template get rhoai-maas` |
+| `curl: (7) Couldn't connect` or a proxy 403 to any host but MaaS | By design: sandboxes have no egress beyond what an attached provider or a sandbox policy allows |
+| `credential_endpoint_mismatch` | The placeholder was sent somewhere other than the MaaS gateway under `/v1`. Also by design |
+| TLS errors calling MaaS from a sandbox | The sandbox does not trust the ingress signer. Check ConfigMap `openshell/openshell-additional-ca`; after the signer changes, restart `openshell-0` and stop and start the sandbox |
+| `401` from MaaS in a sandbox | The provider's key expired: `scripts/checkup.sh` shows its expiry and the CronJob's last success |
+| `scripts/openshell-cli.sh` hangs on `Ready` | The pod cannot start; the script prints its events. A missing `openshell-client-tls` Secret means cert-manager has not issued it |
+
+Deleting the `openshell` namespace deletes every sandbox and the gateway's
+database. Turning a label off does not; `pruneObjectBehavior: None` leaves
+everything in place.
 
 ## What to verify on first deploy
 
