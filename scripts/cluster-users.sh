@@ -273,13 +273,31 @@ push_htpasswd
 CONSOLE="$("$OC" whoami --show-console 2>/dev/null || echo "<console URL>")"
 DASHBOARD="$("$OC" get route rhods-dashboard -n redhat-ods-applications -o jsonpath='https://{.spec.host}' 2>/dev/null || true)"
 
+# Passwords go to the terminal only. Everything on stdout is tee'd into logs/
+# by lib-logging, so printing them there would leave every password in a log
+# file. /dev/tty bypasses the tee; with no terminal (a pipeline, CI), they are
+# not printed at all and the file is the only copy.
+tty_ok=0
+{ : > /dev/tty; } 2>/dev/null && tty_ok=1
 echo
-echo "Logins to send (also in ${PW_FILE}, mode 0600, not in git):"
+echo "Logins to send (kept in ${PW_FILE}, mode 0600, not in git):"
 echo
-printf '  %-16s %-22s %s\n' USER PASSWORD STATE
+printf '  %-16s %s\n' USER STATE
 for u in "${USERS[@]}"; do
-    printf '  %-16s %-22s %s\n' "$u" "$(pw_get "$u")" "${NEWPW[$u]}"
+    printf '  %-16s %s\n' "$u" "${NEWPW[$u]}"
 done
+if [ "$tty_ok" -eq 1 ]; then
+    {
+        echo
+        echo "  Passwords (shown on this terminal only, not logged):"
+        for u in "${USERS[@]}"; do
+            printf '    %-16s %s\n' "$u" "$(pw_get "$u")"
+        done
+    } > /dev/tty
+else
+    echo
+    echo "  No terminal, so passwords are not printed. Read them from ${PW_FILE}."
+fi
 cat <<EOF
 
   Console:        ${CONSOLE}   (choose the "${PROVIDER_NAME}" login)
