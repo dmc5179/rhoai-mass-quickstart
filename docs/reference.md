@@ -19,7 +19,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
-| `hermes-smoke-test.sh` | Prove the Hermes path: pod Ready, MaaS key unexpired, Open WebUI holding the Hermes API key, then one agent turn that must call a tool. Reports the tool, its result and the answer. `--dry-run` skips the turn. |
+| `hermes-smoke-test.sh` | Prove the Hermes path: pod Ready, MaaS key unexpired, Open WebUI holding the Hermes API key, then one agent turn that must call a tool. Reports the tool, its result and the answer. With `openWebui.maas`, also Open WebUI's MaaS key, the model in its list and one short answer. `--dry-run` skips the turns. |
 | `openshell-smoke-test.sh` | Prove the OpenShell path: gateway Ready and CLI connected, then a throwaway sandbox from the `rhoai-maas` template and provider that must hold `OPENAI_BASE_URL` and only a key placeholder, list the models, get one chat completion, have the placeholder refused at another host, and trust the cluster ingress signer. Deletes the sandbox on every exit. `--dry-run` checks only the gateway. |
 | `openshell-cli.sh` | Run the OpenShell CLI against the cluster's gateway from a pod in the cluster, so no `openshell` binary is needed locally. `-- <args>` runs one command (`--keep` leaves the pod for the next call; `--stdin` passes stdin through), `shell` opens an interactive shell, `delete` removes the pod, `--dry-run` prints the pod spec. The pod runs the CLI image at the gateway's own tag and signs in with the gateway's mTLS client bundle, so it needs a cluster admin's kubeconfig. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
@@ -167,9 +167,12 @@ full lists, with every default, are in each policy's README:
 | `openWebui.auth` | `local` | `openshift` signs in with OpenShift credentials through an oauth-proxy sidecar; `local` uses Open WebUI accounts |
 | `openWebui.adminEmail` | *(none)* | The administrator, created on first start. With `auth: openshift`, `<user>@cluster.local` for an htpasswd user |
 | `openWebui.allowedGroups` | `[maas-users]` | `auth: openshift` only. OpenShift groups whose members can sign in |
+| `openWebui.maas.model` | *(none)* | A model name from `openshiftAiModels.models`, offered directly next to Hermes. All Open WebUI users share its one key, so one `tokenRateLimit`. Sets `ENABLE_PERSISTENT_CONFIG=False`: Admin Panel settings then last until restart |
+| `openWebui.maas.keyTtl` / `.renewBefore` | `720h` / `168h` | As for Hermes |
 
 The model's `accessGroups` must include `system:serviceaccounts:hermes`, the
-group Hermes mints its key as. Enable both with the `hermes-agent` and
+group Hermes mints its key as, and with `openWebui.maas`,
+`system:serviceaccounts:open-webui`. Enable both with the `hermes-agent` and
 `open-webui` labels.
 
 ## Environment from bin/ocp-env.sh

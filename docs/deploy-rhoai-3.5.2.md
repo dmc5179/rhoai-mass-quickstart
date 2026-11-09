@@ -358,7 +358,8 @@ All in the `rhoai-maas` hub values (`autoshift/values/clustersets/hub.yaml`):
 | `config.openWebui.auth` | `openshift` | Sign in with OpenShift credentials, through an oauth-proxy sidecar |
 | `config.openWebui.adminEmail` | `<user>@cluster.local` | The administrator. See [the first administrator](#the-first-administrator) |
 | `config.openWebui.allowedGroups` | unset, so `[maas-users]` | Who may sign in |
-| model `accessGroups` | includes `system:serviceaccounts:hermes` | Hermes mints its own key with its ServiceAccount; without this group maas-api refuses it with a 403 |
+| `config.openWebui.maas.model` | `granite-4-tiny-gpu` | A second Open WebUI connection, straight to this model. See [Open WebUI's direct model connection](#open-webuis-direct-model-connection) |
+| model `accessGroups` | includes `system:serviceaccounts:hermes` and `system:serviceaccounts:open-webui` | Hermes and Open WebUI each mint their own key with their ServiceAccount; without the group maas-api refuses it with a 403 |
 | model `tokenRateLimit` | `300000` per `1m` | See below |
 
 Every Hermes turn sends about 14,000 prompt tokens, because its tool
@@ -373,9 +374,10 @@ that, not from chat traffic.
 "$OC" get policies.policy.open-cluster-management.io -n policies-autoshift | grep -E 'hermes|open-webui'
 ```
 
-All six Compliant: `policy-hermes-agent`, `-access`, `-ready`, `-key`,
-`policy-open-webui` and `-ready`. `-key` waits for `-ready`, so it shows
-Pending for a few minutes after the pod first starts, which is not a fault.
+All eight Compliant: `policy-hermes-agent`, `-access`, `-ready`, `-key`,
+`policy-open-webui`, `-ready`, `-maas-access` and `-maas-key`. Each `-key`
+waits for its `-ready`, so it shows Pending for a few minutes after the pod
+first starts, which is not a fault.
 
 Hermes mints its key at startup and logs it:
 
@@ -397,7 +399,10 @@ Then a real agent turn with a tool call, end to end:
 scripts/hermes-smoke-test.sh
 ```
 
-It reports the tool Hermes called and its answer. Open WebUI is at:
+It reports the tool Hermes called and its answer. With
+`config.openWebui.maas` set it also checks Open WebUI's own MaaS key, that
+Open WebUI lists the model, and that the model answers through it. Open WebUI
+is at:
 
 ```bash
 "$OC" get routes.route.openshift.io open-webui -n open-webui -o jsonpath='https://{.spec.host}{"\n"}'
@@ -424,14 +429,47 @@ only**, then kept in its database. On an install that first started with local
 sign-in, set **Admin Panel > Settings > General > Default User Role** to `user`
 once, or new users wait in `pending`.
 
+### Open WebUI's direct model connection
+
+With `config.openWebui.maas.model` set, users can pick
+`publishers/llm/models/granite-4-tiny-gpu` next to `hermes-agent` in Open
+WebUI. It answers directly: no Hermes tools or memory, and no 14,000-token
+system prompt.
+
+**Every Open WebUI user shares one key, so they share one `tokenRateLimit`.**
+The Open WebUI pod mints a single MaaS key with its ServiceAccount, and MaaS
+counts tokens per key owner. One heavy user can use up the model's limit for
+everyone in Open WebUI; Hermes has its own key and is not affected. MaaS sees
+every request as the ServiceAccount, so Open WebUI's chat history is the only
+per-person record. Per-person keys are possible later: see
+[open-webui-maas-design.md](open-webui-maas-design.md).
+
+Open WebUI logs its key at startup, in the same form as Hermes:
+
+```bash
+"$OC" logs deployments.apps/open-webui -n open-webui -c open-webui | grep bootstrap
+```
+
+Two settings change with it. Open WebUI now takes all its settings from the
+policy at every start (`ENABLE_PERSISTENT_CONFIG=False`), because the renewed
+key has to reach it. A setting changed in **Admin Panel > Settings** lasts
+until the pod next restarts, including each key renewal; users, chats and
+per-model settings are kept. The policy also sets `ENABLE_SIGNUP=False`, so
+the password signup form stays closed.
+
+Adding it to a running install restarts the Open WebUI pod once, and any
+Admin Panel settings changed since first start revert to the policy's values.
+
 ### Key renewal
 
 The MaaS key renews itself. Hermes runs under `timeout` and stops at the start
 of the renewal window, `renewBefore` (168h) ahead of expiry. The container
-exits 124, the kubelet restarts it, and the bootstrap mints a replacement.
-That is one restart about every 22 days. A restart count that climbs by one at
-that interval is renewal working, not a crash. `policy-hermes-agent-key`
-reports a key that expired or a renewal more than two hours overdue.
+exits 124, the kubelet restarts it, and the bootstrap mints a replacement and
+revokes the key it replaced. That is one restart about every 22 days. A
+restart count that climbs by one at that interval is renewal working, not a
+crash. `policy-hermes-agent-key` reports a key that expired or a renewal more
+than two hours overdue. Open WebUI's MaaS key works the same way, reported by
+`policy-open-webui-maas-key`.
 
 ### When it goes wrong
 
@@ -442,8 +480,11 @@ reports a key that expired or a renewal more than two hours overdue.
 | `403 Permission Denied` from the proxy after login | The user is not in `allowedGroups`. Add them with `scripts/cluster-users.sh apply <user>` |
 | `server_error` with `resource name may not be empty` at `/oauth/authorize` | The OpenShift OAuth server is rolling out, for example after an htpasswd change. Wait two minutes |
 | New users stuck in `pending` | The default role was set at first start; see above |
-| An empty model list, or `Model not found` | Open WebUI's stored connection to Hermes is stale. Hermes never rotates its key, so this follows only a deleted `hermes` namespace. Re-enter the key in **Admin Panel > Settings > Connections** |
-| `429` in a chat | The model's `tokenRateLimit`. A tool turn costs about 28,000 tokens |
+| A user sees an empty model list | An `open-webui` policy from before `BYPASS_MODEL_ACCESS_CONTROL`: Open WebUI showed connection models to administrators only. Update the policy, or grant access in **Admin Panel > Models** |
+| An empty model list for everyone, or `Model not found` | Open WebUI's stored connection to Hermes is stale. Hermes never rotates its key, so this follows only a deleted `hermes` namespace. With `maas` set, restart the pod; otherwise re-enter the key in **Admin Panel > Settings > Connections** |
+| Only `hermes-agent` in the model list, with `maas` set | Open WebUI has no MaaS key and started with Hermes only. Its `bootstrap` log names the reason; a 403 means the model's `accessGroups` lack `system:serviceaccounts:open-webui`, which `policy-open-webui-maas-access` reports too. It retries hourly |
+| An Admin Panel setting reverted | Expected with `maas` set: settings come from the policy at every start |
+| `429` in a chat | The model's `tokenRateLimit`. A Hermes tool turn costs about 28,000 tokens. On the direct model connection, every Open WebUI user shares one limit |
 | `policy-hermes-agent-key` NonCompliant | The key expired or its renewal failed. The pod's `bootstrap` log names the reason |
 | Long conversations fail on a FIPS cluster | Hermes hashes with MD5 for non-security purposes, which FIPS mode refuses. A known limit of the current image; see [What to verify on first deploy](#what-to-verify-on-first-deploy) |
 

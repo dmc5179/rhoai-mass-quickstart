@@ -11,10 +11,12 @@
 #   Hermes pod Ready -> MaaS key stored and unexpired -> Open WebUI holds the
 #   same Hermes API key, and its Route answers -> POST /v1/chat/completions
 #   to the Hermes API server -> the tool call recorded in Hermes' state.db
+#   -> with config.openWebui.maas, Open WebUI's own MaaS key, the model in its
+#   list, and one short answer from it
 #
 # --dry-run stops before the agent turn. The turn costs about 28k tokens of
 # the model's tokenRateLimit and leaves one session in Hermes' history.
-# Secrets are never printed: the key is piped to curl inside the pod.
+# Secrets are never printed: keys are piped to curl inside the pods.
 
 set -euo pipefail
 
@@ -31,7 +33,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prompt)   PROMPT="$2"; DEFAULT_PROMPT=0; shift 2 ;;
         --dry-run)  DRY_RUN=1; shift ;;
-        -h|--help)  sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)  sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "hermes-smoke-test.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -116,6 +118,23 @@ else
         "The open-webui policy copies ${HNS}/hermes-api-key into ${ONS}/open-webui-hermes;" \
         "check it is Compliant: \"\$OC\" get policy -A | grep open-webui"
     echo "==> Open WebUI Ready, holding the current Hermes API key"
+
+    # With config.openWebui.maas, Open WebUI also connects straight to a MaaS
+    # model, with a key it mints and renews itself. Without the key it starts
+    # with Hermes only, which looks healthy.
+    ODEP="$("$OC" get deployments.apps -n "$ONS" -l app.kubernetes.io/name=open-webui -o json 2>/dev/null || echo '{}')"
+    OENV() { jq -r --arg n "$1" '[.items[0].spec.template.spec.containers[]? | select(.name=="open-webui") | .env[]? | select(.name==$n) | .value][0] // empty' <<<"$ODEP"; }
+    OWUI_MAAS="$(OENV MAAS_API_BASE)"
+    if [ -n "$OWUI_MAAS" ]; then
+        OEXP="$("$OC" get secret open-webui-maas-key -n "$ONS" \
+            -o jsonpath='{.metadata.annotations.open-webui\.autoshift\.io/expires-at}' 2>/dev/null || true)"
+        [ -n "$OEXP" ] || fail "Open WebUI has no MaaS key (Secret ${ONS}/open-webui-maas-key), so it offers Hermes only." \
+            "Its startup log says why: \"\$OC\" logs deploy/open-webui -n ${ONS} -c open-webui | grep bootstrap" \
+            "A 403 there means the model's accessGroups lack system:serviceaccounts:${ONS}."
+        [ "$OEXP" -gt "$NOW" ] || fail "Open WebUI's MaaS key expired $(date -u -d "@${OEXP}" +%Y-%m-%dT%H:%MZ)." \
+            "\"\$OC\" logs deploy/open-webui -n ${ONS} -c open-webui | grep bootstrap"
+        echo "==> Open WebUI MaaS key valid until $(date -u -d "@${OEXP}" +%Y-%m-%dT%H:%MZ)"
+    fi
 
     ROUTE="$("$OC" get routes.route.openshift.io -n "$ONS" -l app.kubernetes.io/name=open-webui \
         -o jsonpath='{.items[0].spec.host}' 2>/dev/null || true)"
@@ -246,6 +265,55 @@ EOF
 
 if [ "$DEFAULT_PROMPT" -eq 1 ] && ! grep -q 'Linux' <<<"$CONTENT"; then
     echo "WARNING: the tool ran, but the answer does not contain 'Linux'; read the results above." >&2
+fi
+
+# --- Open WebUI's MaaS connection -------------------------------------------
+# Signs in from inside the pod, as adminEmail through the trusted header the
+# proxy would send, so no account is created; the session token never leaves
+# the pod. Needs auth openshift and adminEmail.
+if [ -n "${OWUI_MAAS:-}" ]; then
+    OADMIN="$(OENV WEBUI_ADMIN_EMAIL)"
+    OHDR="$(OENV WEBUI_AUTH_TRUSTED_EMAIL_HEADER)"
+    if [ -z "$OADMIN" ] || [ -z "$OHDR" ]; then
+        echo "==> Open WebUI MaaS chat: skipped (needs auth openshift and adminEmail)"
+    else
+        echo "==> Open WebUI: model list and one short answer from the MaaS model"
+        set +e
+        OOUT="$("$OC" exec -i deploy/open-webui -n "$ONS" -c open-webui -- sh -s -- "$OHDR" "$OADMIN" <<'EOS'
+B=http://127.0.0.1:8080
+T="$(curl -s --max-time 30 -X POST "$B/api/v1/auths/signin" -H "$1: $2" \
+    -H 'Content-Type: application/json' -d '{"email":"","password":""}' |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null)"
+[ -n "$T" ] || { echo "signin failed"; exit 3; }
+M="$(curl -s --max-time 30 "$B/api/models" -H "Authorization: Bearer $T" |
+    python3 -c 'import json,sys; print(" ".join(m["id"] for m in json.load(sys.stdin).get("data",[])))' 2>/dev/null)"
+echo "models: $M"
+MM="$(printf '%s\n' $M | grep '^publishers/' | head -1)"
+[ -n "$MM" ] || exit 4
+echo "model: $MM"
+curl -s --max-time 120 "$B/api/chat/completions" -H "Authorization: Bearer $T" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$MM\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the single word: pong\"}]}" |
+    python3 -c 'import json,sys
+d=json.load(sys.stdin)
+c=((d.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+print("answer: " + c.strip()[:200] if c.strip() else "error: " + json.dumps(d)[:300])'
+EOS
+)"
+        orc=$?
+        set -e
+        # shellcheck disable=SC2001
+        sed 's/^/    /' <<<"$OOUT"
+        case "$orc" in
+            0) grep -q '^answer: ' <<<"$OOUT" || fail "Open WebUI listed the MaaS model but got no answer from it." \
+                   "401: its MaaS key was refused; 429: the model's tokenRateLimit, shared by every Open WebUI user." ;;
+            3) fail "could not sign in to Open WebUI from inside the pod." \
+                   "Check ${OHDR} handling: \"\$OC\" logs deploy/open-webui -n ${ONS} -c open-webui --since=5m" ;;
+            4) fail "Open WebUI does not list the MaaS model." \
+                   "It started with Hermes only: \"\$OC\" logs deploy/open-webui -n ${ONS} -c open-webui | grep bootstrap" ;;
+            *) fail "the Open WebUI check failed (exit ${orc})." ;;
+        esac
+    fi
 fi
 
 echo "Hermes smoke test passed."

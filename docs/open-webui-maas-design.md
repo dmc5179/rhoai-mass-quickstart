@@ -1,6 +1,10 @@
 # Open WebUI talking to MaaS models directly: design
 
-Design only. Nothing here is implemented, and no policy has changed.
+Status, 2026-11-09: option A is built (the `open-webui` policy's
+`config.openWebui.maas`; see its README and runbook section 12). The spike
+for option C has run on sandbox141; its results are in
+[Spike results](#spike-results-2026-11-09). Nothing else here is
+implemented.
 
 Today each Open WebUI user reaches exactly one model, `hermes-agent`, through
 one shared Hermes API key (the `open-webui` policy copies
@@ -42,18 +46,27 @@ As a result:
 - Per-person quota and audit therefore need **a key owned by each person**, not
   merely a key per person.
 
-Access is checked on every request, not only at minting: "a valid API key or
-OIDC token, an active subscription, and an authorized group are required to
-access a model" (MaaS book, 1.15.1). Removing a person from the subscription's
-group cuts them off even while their key is unexpired.
+Access is checked on every request: "a valid API key or OIDC token, an active
+subscription, and an authorized group are required to access a model" (MaaS
+book, 1.15.1). **But for an API key, the groups checked are the ones stored in
+the key when it was minted, not the person's current groups.** maas-api records
+the caller's groups with the key ("Groups are immutable - they reflect user's
+group membership at creation time", `maas-api/internal/api_keys/service.go`
+upstream), and validation hands those stored groups to the gateway. Removing a
+person from the subscription's group therefore does **not** cut off a key they
+already hold; it works until it expires or is revoked. (An earlier version of
+this page said the opposite. Read from the upstream code; not yet tested on
+3.5.2.)
 
 How a person gets a key of their own, today:
 
 - **Self-service:** Gen AI studio → API keys in the dashboard, or a temporary
   1-hour key from the Endpoints dialog (MaaS book, 2.2.1 and 2.2.4).
 - **An administrator, on their behalf:** "Create an API key for a user"
-  (MaaS book, 1.16.2). The book documents only the dashboard for this. Whether
-  maas-api exposes an owner field for it is unverified.
+  (MaaS book, 1.16.2), in the dashboard only. maas-api has no owner field: the
+  spike's `"username"` in the create request was ignored, and the key belonged
+  to the administrator. Whether the dashboard reaches it some other way is
+  untested.
 - **Programmatically:** `POST /maas-api/v1/api-keys` with that person's own
   OpenShift token. This is what Hermes does with its ServiceAccount token.
   Keys are capped at 2160h.
@@ -87,11 +100,11 @@ environment is authoritative. The `open-webui` policy would have to pick one.
 `openshift/oauth-proxy` with `--pass-access-token` adds the signed-in user's
 OpenShift OAuth token to every upstream request as `X-Forwarded-Access-Token`.
 The proxy currently requests `scope=user:info user:check-access` (visible in
-the authorize redirect). Whether maas-api accepts a token **with that scope**
-for `POST /v1/api-keys` is not known. It authenticates with a TokenReview,
-which should succeed for scoped tokens, but any authorization check made with the
-token would be limited by the scope. A broader scope (`user:full`) would work,
-but it hands a full-power user token to whatever sits behind the proxy.
+the authorize redirect). **maas-api 3.5.2 mints keys for a token with exactly
+that scope** (spike, below): the gateway authenticates it with a TokenReview,
+which returns the same groups as a full token, and authorizes on those groups
+without a SubjectAccessReview as the user. The scoped token itself can do
+little else: it cannot list the user's projects or create one.
 
 ## Options
 
@@ -153,20 +166,19 @@ A small service in the `open-webui` namespace, with two jobs:
    user JWT, swaps in that user's MaaS key, and forwards to the gateway. A
    NetworkPolicy admits only the Open WebUI pod.
 
-- Per-person quota and audit at MaaS, with group membership checked per person
-  on every request (non-members get 403, not someone else's quota).
-- **Unknown that decides feasibility:** whether maas-api mints for a
-  `user:info user:check-access` token. If it needs `user:full`, the broker
-  receives every user's full-power token, which is a much larger risk than the
-  benefit.
-  - A variant avoids user tokens altogether: an administrator's identity mints
-    keys **on behalf of** users, as the dashboard does (MaaS book, 1.16.2).
-    That needs a maas-api owner field, which is unverified, and it gives the
-    broker administrator minting power.
+- Per-person quota and audit at MaaS: each key is owned by its user, and
+  non-members of the subscription's group cannot mint one.
+- **Feasible as designed** (spike, below): maas-api mints user-owned keys from
+  the `user:info user:check-access` token the proxy already holds, so the
+  broker never sees a full-power token. The administrator variant is not
+  available: maas-api has no owner field.
+- Groups are snapshotted into each key, so leaving the group does not end a
+  key. The broker must revoke a user's key when they leave the subscription's
+  group (watch Group membership), or mint short keys, for example 24 hours,
+  renewed while the user is active, so that departures lapse quickly.
 - Security: the broker holds every user's key. It is a new credential store,
   and new code to review, own and patch. A key is minted only after the user
-  has signed in, and revoking group membership takes effect at the gateway at
-  once.
+  has signed in.
 - FIPS: a new image. Build it on UBI with RHEL's OpenSSL. HMAC-SHA256 (the
   JWT) and TLS through RHEL crypto are both FIPS-approved. Open WebUI's side of
   the JWT is signed by its Debian Python, as all its crypto is today.
@@ -199,29 +211,40 @@ connection with `auth_type: system_oauth` can forward each user's token.
 |---|---|---|---|---|---|
 | A. Shared connection | no | no | yes | renewal reuse | Open WebUI admins |
 | B. Direct connections | yes | yes | **no** (no CORS on the gateway) | none | user's browser |
-| C. Key broker | yes | yes | needs a spike | a service | broker store |
+| C. Key broker | yes | yes | feasible (spike passed) | a service | broker store |
 | D. Pipe function | yes | yes | reduces to C | in Open WebUI DB | Open WebUI DB |
 | E. Native OIDC | yes | yes | no (needs an IdP, and C) | IdP | IdP tokens |
 
 ## Recommendation
 
-1. **Ship A now.** It gives every user the MaaS models next to Hermes with a
-   small change to the `open-webui` policy, reusing Hermes' minting and
-   renewal. Accept a shared quota: 300k tokens per minute is ample for a
-   handful of people, and Open WebUI's chat history is the per-user record in
-   the meantime. Decide `ENABLE_PERSISTENT_CONFIG` as part of it.
-2. **Spike C before building it**, by answering two questions on sandbox141:
-   - Does `POST /maas-api/v1/api-keys` accept a `user:info user:check-access`
-     scoped OAuth token? Test it by running oauth-proxy with
-     `--pass-access-token` and calling maas-api with the forwarded token.
-   - Can an administrator mint a key owned by another user through maas-api,
-     as the dashboard does?
-
-   If the first answer is yes, build C with user-owned keys. If only the second
-   is yes, weigh the broker holding administrator minting power before
-   building. If neither, per-person keys wait for RHOAI.
+1. **Ship A now.** Done: `config.openWebui.maas`. It reuses Hermes' minting,
+   renewal and revocation, and sets `ENABLE_PERSISTENT_CONFIG=False` so the
+   renewed key reaches Open WebUI (with `ENABLE_SIGNUP=False`, because the
+   database value that closed signup no longer applies). Everyone shares one
+   `tokenRateLimit`; 300k tokens per minute is ample for a handful of people.
+2. **Build C when per-person quota or audit is needed.** The spike answered
+   the deciding question yes: user-owned keys from the proxy's scoped token.
+   Design it with short keys or revoke-on-departure, because of the group
+   snapshot.
 3. **Do not pursue B** unless RHOAI adds CORS to the MaaS gateway. **Do not
    pursue D.** **Pursue E only** if an external IdP is wanted for other
    reasons.
+
+## Spike results, 2026-11-09
+
+Run on sandbox141 (RHOAI 3.5.2), with an htpasswd user in the subscription's
+owner group. Tokens came from the `openshift-challenging-client` OAuth client
+with a basic-auth challenge, so no browser was needed.
+
+| Test | Result |
+|---|---|
+| TokenReview of a `user:full` and a `user:info user:check-access` token | Both authenticated, with identical groups (`maas-users`, `system:authenticated:oauth`, `system:authenticated`); scopes differ |
+| `POST /maas-api/v1/api-keys` with each | **201 for both**, and each key answered a chat completion with 200 |
+| What the scoped token can do on the cluster | `SelfSubjectAccessReview` only. Listing projects and requesting one: 403 (both 200/201 with `user:full`) |
+| Administrator mints with `"username": "<other user>"` | 201, but the key belongs to the administrator: the field is ignored |
+| Administrator search filtered by `{"filters":{"username":"<user>"}}` | Works: lists that user's keys |
+| Group snapshot (remove the user from the group, use the key) | Not run; it changes Group membership. The upstream code says the key keeps working |
+
+All spike keys were revoked and the test OAuth tokens deleted.
 
 [maas-book]: https://access.redhat.com/documentation/en-us/red_hat_openshift_ai_self-managed/3.5/html-single/govern_llm_access_with_models-as-a-service/index
