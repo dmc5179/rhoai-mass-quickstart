@@ -309,7 +309,9 @@ scripts/40-lightspeed.sh key        # mint a key as maas-user, write openshift-l
 
 Don't run `scripts/40-lightspeed.sh install` on this build: the policy owns
 the operator and the OLSConfig, and `install` would give them a second owner.
-The key lasts a year by default (`--key-ttl`); re-run `key` before it expires.
+The key lasts 90 days, the longest MaaS allows on RHOAI 3.5.2 (it refuses a
+longer `--key-ttl` with "expiration exceeds maximum allowed"). Re-run `key`
+before it expires; Lightspeed stops answering when it does.
 
 ## 11. Checkup
 

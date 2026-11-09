@@ -15,7 +15,9 @@
 # MaaS is an OpenAI-compatible endpoint with bearer auth, which is exactly
 # what Lightspeed's rhoai_vllm provider expects. The only wrinkle is the API
 # key: MaaS keys carry an expiry, and Lightspeed holds its key in a Secret
-# with no rotation of its own, so --key-ttl defaults to a year. Re-run
+# with no rotation of its own, so --key-ttl defaults to the longest MaaS
+# allows: 90 days on RHOAI 3.5.2, which rejects anything longer with
+# "expiration exceeds maximum allowed". Re-run
 # `install` to mint a fresh key and update the Secret.
 #
 # `key` does only that: mints a MaaS key and writes the maas-api-key Secret in
@@ -31,7 +33,7 @@ ORIG_ARGS=("$@")
 
 ACTION="${1:-}"; shift || true
 MODEL=""
-KEY_TTL="8760h"     # one year
+KEY_TTL="2160h"     # 90 days, the MaaS maximum on RHOAI 3.5.2
 
 while [ $# -gt 0 ]; do
     case "$1" in
