@@ -196,6 +196,16 @@ echo "==> Storing the key in ${NS}/${SECRET}"
     --dry-run=client -o yaml | "$OC" apply -f - >/dev/null
 
 if [ "$ACTION" = "key" ]; then
+    # The Lightspeed operator doesn't watch this Secret. Created after the
+    # policy's OLSConfig, it went unnoticed for 40 minutes on the sandbox141
+    # build, with the OLSConfig still reporting "credential secret not found".
+    # Touching the OLSConfig makes the operator reconcile now. The policy owns
+    # the OLSConfig with musthave, so an extra annotation doesn't conflict.
+    if "$OC" get olsconfig cluster >/dev/null 2>&1; then
+        "$OC" annotate olsconfig cluster \
+            rhoai-mass-aws/key-updated="$(date -u +%FT%TZ)" --overwrite >/dev/null
+        echo "==> Nudged the OLSConfig so the operator picks up the new key"
+    fi
     cat <<EOF
 
 Stored a fresh MaaS API key in ${NS}/${SECRET} (minted as ${MAAS_MINT_IDENTITY},
