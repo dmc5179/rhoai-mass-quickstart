@@ -160,6 +160,37 @@ if want cluster; then
     if [ -z "$co_bad" ]; then ok "all cluster operators healthy"
     else bad "cluster operators unhealthy: ${co_bad}"
          info "If several are degraded at once, check 'load' before debugging any of them"; fi
+
+    # FIPS, from what the cluster records rather than from a node: the
+    # install-config's `fips`, and each pool's rendered MachineConfig, whose
+    # spec.fips is what makes its nodes boot with fips=1. Reading a node's
+    # /proc/sys/crypto/fips_enabled would need `oc debug`, which creates a pod,
+    # and this script changes nothing. FIPS cannot be switched after install,
+    # so a mismatch with cluster.env means the cluster predates the setting or
+    # was built with --no-fips, not that anything is broken.
+    ic_fips="$(run get configmap cluster-config-v1 -n kube-system -o jsonpath='{.data.install-config}' \
+               | awk -F': *' '$1=="fips"{print $2}')"
+    ic_fips="${ic_fips:-false}"
+    pool_fips="$(run get mcp -o json | OC="$OC" python3 -I -c '
+import json, subprocess, sys, os
+oc = os.environ.get("OC", "oc")
+for p in json.load(sys.stdin)["items"]:
+    rendered = (p.get("spec", {}).get("configuration") or {}).get("name", "")
+    out = subprocess.run([oc, "get", "machineconfig", rendered, "-o", "jsonpath={.spec.fips}"],
+                         capture_output=True, text=True, timeout=60).stdout.strip() if rendered else ""
+    print(p["metadata"]["name"] + "=" + (out or "false"))' 2>/dev/null | tr '\n' ' ')"
+    if [ "$ic_fips" = "true" ]; then
+        if grep -q '=false' <<<"$pool_fips"; then
+            bad "FIPS requested at install, but not every pool renders it: ${pool_fips}"
+        else
+            ok "FIPS mode: on (install-config; rendered MachineConfigs: ${pool_fips% })"
+        fi
+    else
+        ok "FIPS mode: off"
+    fi
+    if [ "${FIPS:-}" = "true" ] && [ "$ic_fips" != "true" ]; then
+        info "cluster.env now defaults to FIPS=true; this cluster was built without it (install-time only)."
+    fi
 fi
 
 # --- autoshift plumbing -----------------------------------------------------
