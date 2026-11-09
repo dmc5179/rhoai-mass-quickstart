@@ -81,7 +81,21 @@ def main():
                 continue
             if not all(matches(e, labels) for e in switches):
                 continue                      # feature is off; nothing to say
+            # An unset label under the same prefix as a switch is an opt-in
+            # sub-feature of that policy that this cluster hasn't chosen, not
+            # a broken predicate. Upstream ztwim gates federation and nesting
+            # this way (autoshift.io/ztwim-federation-mesh, -nested-role):
+            # with ztwim on and those unset, their Placements correctly
+            # match nothing. A wrong predicate has a value that doesn't fit,
+            # like cluster-type 'hub' against `In ['spoke']`.
+            def sub_feature_unset(e):
+                return labels.get(e.get("key")) is None and any(
+                    e.get("key", "").startswith(sw.get("key", "") + "-")
+                    for sw in switches)
+
             for e in others:
+                if sub_feature_unset(e):
+                    continue
                 if not matches(e, labels):
                     findings.append(
                         f"{name}: enabled, but needs {e.get('key')} "
