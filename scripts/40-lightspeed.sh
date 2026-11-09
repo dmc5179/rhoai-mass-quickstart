@@ -4,6 +4,7 @@
 #                    you are serving through MaaS.
 #
 # Usage: scripts/40-lightspeed.sh install [--model <id>] [--key-ttl <dur>]
+#        scripts/40-lightspeed.sh key [--key-ttl <dur>]
 #        scripts/40-lightspeed.sh status
 #        scripts/40-lightspeed.sh uninstall
 #
@@ -16,6 +17,12 @@
 # key: MaaS keys carry an expiry, and Lightspeed holds its key in a Secret
 # with no rotation of its own, so --key-ttl defaults to a year. Re-run
 # `install` to mint a fresh key and update the Secret.
+#
+# `key` does only that: mints a MaaS key and writes the maas-api-key Secret in
+# openshift-lightspeed. Use it when the openshift-lightspeed AutoShift policy
+# owns the operator and the OLSConfig, which is the case once the hub carries
+# autoshift.io/openshift-lightspeed: 'true'. Running `install` as well would
+# give the operator and the OLSConfig two owners.
 
 set -euo pipefail
 
@@ -35,8 +42,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ACTION" in
-    install|status|uninstall) ;;
-    *) echo "Usage: scripts/40-lightspeed.sh {install|status|uninstall} [--model <id>] [--key-ttl <dur>]" >&2; exit 2 ;;
+    install|key|status|uninstall) ;;
+    *) echo "Usage: scripts/40-lightspeed.sh {install|key|status|uninstall} [--model <id>] [--key-ttl <dur>]" >&2; exit 2 ;;
 esac
 
 . "${ROOT}/cluster.env"
@@ -96,6 +103,15 @@ echo "==> Gateway:      ${HOST}"
 echo "==> Subscription: ${SUBSCRIPTION}"
 
 # --- operator ---------------------------------------------------------------
+if [ "$ACTION" = "key" ]; then
+    # The policy creates the namespace with the operator. Waiting for it, rather
+    # than creating it here, keeps the policy the only owner of the namespace.
+    echo "==> Waiting for the ${NS} namespace (created by the openshift-lightspeed policy)"
+    "$OC" wait --for=create "namespace/${NS}" --timeout=10m >/dev/null || {
+        echo "Error: ${NS} does not exist. Is autoshift.io/openshift-lightspeed 'true' and the policy Compliant?" >&2
+        exit 1
+    }
+else
 echo "==> Installing the OpenShift Lightspeed operator"
 "$OC" apply -f - <<EOF
 apiVersion: v1
@@ -141,6 +157,7 @@ echo "    ${CSV}"
 # fails instantly with "no matching resources found" rather than waiting.
 "$OC" wait --for=create crd/olsconfigs.ols.openshift.io --timeout=5m >/dev/null
 "$OC" wait --for=condition=established crd/olsconfigs.ols.openshift.io --timeout=2m >/dev/null
+fi
 
 # --- model ------------------------------------------------------------------
 # Mint a key first: the model listing is served by the gateway, which needs
@@ -162,12 +179,12 @@ API_KEY="$(jq -r '.key // empty' <<<"$KEY_RESPONSE")"
     exit 1
 }
 
-if [ -z "$MODEL" ]; then
+if [ "$ACTION" = "install" ] && [ -z "$MODEL" ]; then
     MODEL="$(curl -sSk --max-time 30 -H "Authorization: Bearer ${API_KEY}" \
         "${HOST}/maas-api/v1/models" 2>/dev/null | jq -r '.data[0].id // empty')"
     [ -n "$MODEL" ] || { echo "Error: the gateway lists no models." >&2; exit 1; }
 fi
-echo "==> Model: ${MODEL}"
+[ "$ACTION" = "install" ] && echo "==> Model: ${MODEL}"
 
 # --- credentials + config ---------------------------------------------------
 # The key name is always "apitoken" regardless of provider.
@@ -175,6 +192,19 @@ echo "==> Storing the key in ${NS}/${SECRET}"
 "$OC" create secret generic "$SECRET" -n "$NS" \
     --from-literal=apitoken="$API_KEY" \
     --dry-run=client -o yaml | "$OC" apply -f - >/dev/null
+
+if [ "$ACTION" = "key" ]; then
+    cat <<EOF
+
+Stored a fresh MaaS API key in ${NS}/${SECRET} (minted as ${MAAS_MINT_IDENTITY},
+expires in ${KEY_TTL}). The openshift-lightspeed policy's OLSConfig reads it.
+
+Re-run before it expires:
+
+    scripts/40-lightspeed.sh key
+EOF
+    exit 0
+fi
 
 # The provider URL must end in /v1.
 echo "==> Applying the OLSConfig"

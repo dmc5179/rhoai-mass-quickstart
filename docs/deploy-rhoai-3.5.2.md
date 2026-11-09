@@ -283,6 +283,18 @@ scripts/35-smoke-test.sh
 It mints a key as `maas-user`, lists models, and sends a real prompt through
 the gateway. Stub text in the answer means the model fell back to a simulator.
 
+Then give Lightspeed its key. The `openshift-lightspeed` policy installs the
+operator and writes the OLSConfig, but the MaaS key it reads is a credential,
+so it is minted here rather than kept in Git:
+
+```bash
+scripts/40-lightspeed.sh key        # mint a key as maas-user, write openshift-lightspeed/maas-api-key
+```
+
+Don't run `scripts/40-lightspeed.sh install` on this build: the policy owns
+the operator and the OLSConfig, and `install` would give them a second owner.
+The key lasts a year by default (`--key-ttl`); re-run `key` before it expires.
+
 ## 11. Checkup
 
 ```bash
