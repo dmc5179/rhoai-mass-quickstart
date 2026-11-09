@@ -20,6 +20,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
 | `hermes-smoke-test.sh` | Prove the Hermes path: pod Ready, MaaS key unexpired, Open WebUI holding the Hermes API key, then one agent turn that must call a tool. Reports the tool, its result and the answer. `--dry-run` skips the turn. |
+| `openshell-cli.sh` | Run the OpenShell CLI against the cluster's gateway from a pod in the cluster, so no `openshell` binary is needed locally. `-- <args>` runs one command (`--keep` leaves the pod for the next call; `--stdin` passes stdin through), `shell` opens an interactive shell, `delete` removes the pod, `--dry-run` prints the pod spec. The pod runs the CLI image at the gateway's own tag and signs in with the gateway's mTLS client bundle, so it needs a cluster admin's kubeconfig. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
 | `cluster-users.sh` | Create, update or remove named htpasswd logins for the people using the cluster (`apply john paul [--admin]`, `remove`, `status`). Prints the passwords to send; keeps them in `secrets/cluster-users.env`; adds the users to `maas-users` (and `cluster-admins` with `--admin`) in the hub values. |
@@ -27,6 +28,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `spot-check.sh` | Read-only: spot vs on-demand prices, spot placement scores per zone, the account's spot vCPU quotas, and the hourly cost of the default layout with and without spot workers and GPU. Run it before phase 10 to choose `VPC_AZ` and instance types (`--workers`, `--gpus`, `--dry-run`). |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
+| `lib-openshell-cli.sh` | The OpenShell CLI pod, sourced by `openshell-cli.sh` and `openshell-smoke-test.sh`. |
 
 ### Options
 
@@ -39,6 +41,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
 hermes-smoke-test.sh [--dry-run] [--prompt "..."]
+openshell-cli.sh    [--keep] [--stdin] -- <openshell args> | shell | delete | --dry-run
 40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
 50-autoshift.sh     {bootstrap|adopt|status|uninstall}
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
@@ -76,6 +79,7 @@ scripts/logs.sh --last     # path of the newest log
 | `maas-verify` | `30-verify-maas.sh` |
 | `smoke-test` | `35-smoke-test.sh` |
 | `hermes-smoke-test` | `hermes-smoke-test.sh` |
+| `openshell-cli` | `openshell-cli.sh` (not `shell`, which is interactive) |
 | `lightspeed` | `40-lightspeed.sh` |
 | `autoshift` | `50-autoshift.sh` |
 | `destroy-<platform>` | `90-destroy-cluster.sh` |
