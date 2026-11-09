@@ -8,7 +8,9 @@
 #        scripts/cluster-users.sh status
 #
 #   apply     Add each user, or keep them as they are. A new user gets a new
-#             password; an existing user keeps theirs unless --rotate. Every
+#             password; an existing user keeps theirs unless --rotate. A user
+#             whose password is in secrets/cluster-users.env but who is missing
+#             from the cluster (a rebuild) gets that same password back. Every
 #             user goes into the maas-users Group, so they can mint MaaS API
 #             keys. With --admin they also go into cluster-admins
 #             (ClusterRole cluster-admin).
@@ -45,7 +47,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIG_ARGS=("$@")
 
-usage() { sed -n '2,44p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,43p' "${BASH_SOURCE[0]}"; }
 case "${1:-}" in -h|--help|"") usage; exit 0 ;; esac
 ACTION="$1"; shift
 
@@ -251,6 +253,11 @@ for u in "${USERS[@]}"; do
     pw="$(pw_get "$u")"
     if [ -n "$pw" ] && [ "$ROTATE" -eq 0 ] && grep -q "^${u}:" "$HTFILE" 2>/dev/null; then
         state="kept"
+    elif [ -n "$pw" ] && [ "$ROTATE" -eq 0 ]; then
+        # In secrets/cluster-users.env but not in the cluster's htpasswd: a
+        # rebuilt cluster, or a Secret recreated by hand. Put the same password
+        # back rather than inventing a new one people would have to be sent.
+        state="restored"
     else
         pw="$(python3 -I -c "
 import secrets, string
