@@ -1,8 +1,9 @@
 # Deploy RHOAI 3.5.2 with MaaS into a new RHDP account
 
 A linear runbook. It starts when a new Red Hat Demo Platform (RHDP) **AWS
-Blank Open Environment** arrives and ends with MaaS serving a model and
-`scripts/checkup.sh` reporting no problems. Run every block from the root of
+Blank Open Environment** arrives and ends with MaaS serving a model,
+`scripts/checkup.sh` reporting no problems, and the Hermes agent answering
+through Open WebUI. Run every block from the root of
 this repository, in order.
 
 The stack it builds:
@@ -336,6 +337,118 @@ first. The MaaS section carries the rest of the 3.5.2 checks:
 
 Done when the summary says `No problems found.` and the smoke test answers.
 
+## 12. Hermes and Open WebUI
+
+The Hermes agent and Open WebUI, its chat front end, arrive as the
+`hermes-agent` and `open-webui` policies. There is nothing to run: `adopt`
+turned them on, and `policy-hermes-agent` waits on
+`policy-openshift-ai-models-ready`, so they come up on their own once step 10
+answers. This section is how to check them and what to expect.
+
+### What turns them on
+
+All in the `rhoai-maas` hub values (`autoshift/values/clustersets/hub.yaml`):
+
+| Setting | This build | Why |
+|---|---|---|
+| labels `hermes-agent`, `open-webui` | `'true'` | Enablement |
+| `config.hermesAgent.model` | `granite-4-tiny-gpu` | A model **name** from `openshiftAiModels.models`. The request id, subscription, gateway and CA are derived from it |
+| `config.openWebui.auth` | `openshift` | Sign in with OpenShift credentials, through an oauth-proxy sidecar |
+| `config.openWebui.adminEmail` | `<user>@cluster.local` | The administrator. See [the first administrator](#the-first-administrator) |
+| `config.openWebui.allowedGroups` | unset, so `[maas-users]` | Who may sign in |
+| model `accessGroups` | includes `system:serviceaccounts:hermes` | Hermes mints its own key with its ServiceAccount; without this group maas-api refuses it with a 403 |
+| model `tokenRateLimit` | `300000` per `1m` | See below |
+
+Every Hermes turn sends about 14,000 prompt tokens, because its tool
+definitions, skills and memory travel with each request, and a turn that calls
+a tool costs about twice that. The `openshift-ai-models` default of 50000 a
+minute is three turns; 300000 leaves room for several users. Size it from
+that, not from chat traffic.
+
+### Check it
+
+```bash
+"$OC" get policies.policy.open-cluster-management.io -n policies-autoshift | grep -E 'hermes|open-webui'
+```
+
+All six Compliant: `policy-hermes-agent`, `-access`, `-ready`, `-key`,
+`policy-open-webui` and `-ready`. `-key` waits for `-ready`, so it shows
+Pending for a few minutes after the pod first starts, which is not a fault.
+
+Hermes mints its key at startup and logs it:
+
+```bash
+"$OC" logs deployments.apps/hermes-agent -n hermes -c hermes | grep bootstrap
+```
+
+```
+[bootstrap] created Secret hermes-api-key with a new random API_SERVER_KEY
+[bootstrap] API_SERVER_KEY read from Secret hermes-api-key
+[bootstrap] minting a MaaS key: no stored key
+[bootstrap] minted MaaS key (subscription granite-4-tiny-gpu-default, ttl 720h), valid until <date>
+[bootstrap] Hermes will restart for key renewal at <date a week earlier>
+```
+
+Then a real agent turn with a tool call, end to end:
+
+```bash
+scripts/hermes-smoke-test.sh
+```
+
+It reports the tool Hermes called and its answer. Open WebUI is at:
+
+```bash
+"$OC" get routes.route.openshift.io open-webui -n open-webui -o jsonpath='https://{.spec.host}{"\n"}'
+```
+
+Opening it redirects to the OpenShift login. Sign in as a user from
+`scripts/cluster-users.sh apply`; it adds people to `maas-users`, which is
+what `allowedGroups` admits.
+
+### The first administrator
+
+The proxy names each OpenShift user to Open WebUI as `<username>@cluster.local`
+when the user has no email address, which is every htpasswd user. Open WebUI
+creates the account named by `adminEmail` as administrator on its first start,
+so `adminEmail` must be that form: `danclark@cluster.local` for `danclark`. Any
+other address creates an administrator nobody can sign in as.
+
+Everyone else starts as `user`, because `allowedGroups` already decided who
+gets in. The proxy cannot pass OpenShift groups on, so further administrators
+are promoted in **Admin Panel > Users**.
+
+`adminEmail` and the default role are read on Open WebUI's **first start
+only**, then kept in its database. On an install that first started with local
+sign-in, set **Admin Panel > Settings > General > Default User Role** to `user`
+once, or new users wait in `pending`.
+
+### Key renewal
+
+The MaaS key renews itself. Hermes runs under `timeout` and stops at the start
+of the renewal window, `renewBefore` (168h) ahead of expiry. The container
+exits 124, the kubelet restarts it, and the bootstrap mints a replacement.
+That is one restart about every 22 days. A restart count that climbs by one at
+that interval is renewal working, not a crash. `policy-hermes-agent-key`
+reports a key that expired or a renewal more than two hours overdue.
+
+### When it goes wrong
+
+| Symptom | Cause |
+|---|---|
+| `[bootstrap] ... mint rejected, HTTP 403` | The model's `accessGroups` lack `system:serviceaccounts:hermes`. `policy-hermes-agent-access` says so too |
+| `[bootstrap] ... no HTTP response` | maas-api or the gateway is not up yet. The bootstrap retries for several minutes, then exits and the kubelet restarts it to try again |
+| `403 Permission Denied` from the proxy after login | The user is not in `allowedGroups`. Add them with `scripts/cluster-users.sh apply <user>` |
+| `server_error` with `resource name may not be empty` at `/oauth/authorize` | The OpenShift OAuth server is rolling out, for example after an htpasswd change. Wait two minutes |
+| New users stuck in `pending` | The default role was set at first start; see above |
+| An empty model list, or `Model not found` | Open WebUI's stored connection to Hermes is stale. Hermes never rotates its key, so this follows only a deleted `hermes` namespace. Re-enter the key in **Admin Panel > Settings > Connections** |
+| `429` in a chat | The model's `tokenRateLimit`. A tool turn costs about 28,000 tokens |
+| `policy-hermes-agent-key` NonCompliant | The key expired or its renewal failed. The pod's `bootstrap` log names the reason |
+| Long conversations fail on a FIPS cluster | Hermes hashes with MD5 for non-security purposes, which FIPS mode refuses. A known limit of the current image; see [What to verify on first deploy](#what-to-verify-on-first-deploy) |
+
+Deleting the `hermes` or `open-webui` namespace deletes Hermes' memory and
+skills, or Open WebUI's users and chats. Turning a label off does not;
+`pruneObjectBehavior: None` leaves everything in place.
+
 ## What to verify on first deploy
 
 These were render-tested or reasoned about, never seen on a cluster. Record
@@ -390,6 +503,15 @@ what you find in this file.
    Subscription and the ingress operator's `GATEWAY_API_OPERATOR_VERSION`; the
    full set of commands is in
    [rhoai-disconnected-additional-images.md](rhoai-disconnected-additional-images.md#service-mesh-is-openshifts-dependency-not-rhoais).
+
+7. **Hermes under FIPS.** The current Hermes image calls `hashlib.md5()`
+   without `usedforsecurity=False`, which RHEL's OpenSSL refuses in FIPS mode.
+   It was reproduced with `OPENSSL_FORCE_FIPS_MODE=1`, not seen on a FIPS
+   cluster. Expect the pod to start and short turns to work. Bundled skills are
+   not synced at startup, which is logged and tolerated, and conversations long
+   enough to be compressed fail. A long conversation is the test. The fix is an
+   image built with that flag; Open WebUI runs on a Debian base whose OpenSSL
+   ignores FIPS mode, so it works but is not FIPS validated.
 
 ## When you are done
 

@@ -19,6 +19,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
 | `check-operator-install-modes.sh` | Find operator policies whose OperatorGroup scope the cluster's catalog will reject. Read-only. |
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
+| `hermes-smoke-test.sh` | Prove the Hermes path: pod Ready, MaaS key unexpired, Open WebUI holding the Hermes API key, then one agent turn that must call a tool. Reports the tool, its result and the answer. `--dry-run` skips the turn. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
 | `cluster-users.sh` | Create, update or remove named htpasswd logins for the people using the cluster (`apply john paul [--admin]`, `remove`, `status`). Prints the passwords to send; keeps them in `secrets/cluster-users.env`; adds the users to `maas-users` (and `cluster-admins` with `--admin`) in the hub values. |
@@ -37,6 +38,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
                     [--instance-type <t>] [--spot] [--stdout] [--force]
 30-verify-maas.sh   [--no-cleanup] [--cleanup-only]
 35-smoke-test.sh    [--prompt "..."] [--model <id>] [--keep-key]
+hermes-smoke-test.sh [--dry-run] [--prompt "..."]
 40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
 50-autoshift.sh     {bootstrap|adopt|status|uninstall}
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
@@ -73,6 +75,7 @@ scripts/logs.sh --last     # path of the newest log
 | `maas-install` | `20-deploy-maas.sh` |
 | `maas-verify` | `30-verify-maas.sh` |
 | `smoke-test` | `35-smoke-test.sh` |
+| `hermes-smoke-test` | `hermes-smoke-test.sh` |
 | `lightspeed` | `40-lightspeed.sh` |
 | `autoshift` | `50-autoshift.sh` |
 | `destroy-<platform>` | `90-destroy-cluster.sh` |
@@ -139,6 +142,28 @@ A log with no `RESULT` footer means the run is still going, or was killed.
 All gitignored. Only the `.example` files are committed, listed individually
 in `.gitignore` — do not generalise that to `*.example`, or a real credential
 saved under that name would be committed.
+
+## Hermes and Open WebUI settings
+
+Hub values (`config:` in `autoshift/values/clustersets/hub.yaml` of the
+AutoShift fork), read by the `hermes-agent` and `open-webui` policies. The
+full lists, with every default, are in each policy's README:
+[hermes-agent](https://github.com/dmc5179/autoshiftv2/blob/rhoai-maas/policies/stable/hermes-agent/README.md),
+[open-webui](https://github.com/dmc5179/autoshiftv2/blob/rhoai-maas/policies/stable/open-webui/README.md).
+
+| Setting | Default | Notes |
+|---|---|---|
+| `hermesAgent.model` | *(required)* | A model **name** from `openshiftAiModels.models`, not a request id. The request id, subscription, gateway and CA are derived from it |
+| `hermesAgent.keyTtl` | `720h` | MaaS key lifetime, whole hours, at most `2160h` (the RHOAI 3.5 limit). Longer values fail the policy render |
+| `hermesAgent.renewBefore` | `168h` | How long before expiry the pod restarts to renew the key. Must be shorter than `keyTtl` |
+| `hermesAgent.image` | the verified pin | Hermes image, pinned by digest |
+| `openWebui.auth` | `local` | `openshift` signs in with OpenShift credentials through an oauth-proxy sidecar; `local` uses Open WebUI accounts |
+| `openWebui.adminEmail` | *(none)* | The administrator, created on first start. With `auth: openshift`, `<user>@cluster.local` for an htpasswd user |
+| `openWebui.allowedGroups` | `[maas-users]` | `auth: openshift` only. OpenShift groups whose members can sign in |
+
+The model's `accessGroups` must include `system:serviceaccounts:hermes`, the
+group Hermes mints its key as. Enable both with the `hermes-agent` and
+`open-webui` labels.
 
 ## Environment from bin/ocp-env.sh
 
