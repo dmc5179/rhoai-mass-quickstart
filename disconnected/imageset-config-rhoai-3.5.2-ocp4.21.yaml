@@ -266,8 +266,8 @@ mirror:
     # autoshift.io/openshell-version label), so they are mirrored by tag: an
     # ImageDigestMirrorSet redirects digest pulls only, and oc-mirror writes
     # the redirect for these to the ImageTagMirrorSet. Apply both files. Bump
-    # the tag together with the label and the chart below. Index digests when
-    # this file was written, to verify a mirror run:
+    # the tag together with the label and the fork's vendored chart. Index
+    # digests when this file was written, to verify a mirror run:
     #   odh-openshell-gateway     sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
     #   odh-openshell-supervisor  sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
     #   odh-openshell-sandbox     sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
@@ -285,12 +285,10 @@ mirror:
     #   sha256:f26ef64172ea61f5ac5ba4be8c5c738bf8760b22b3e5148ce7b40f7308ab32db
     - name: registry.access.redhat.com/ubi9/ubi-minimal:9.8
 
-    # The OpenShell Helm chart, an OCI artifact (application/vnd.oci.image.
-    # manifest.v1+json), sha256:036f3fe3b0ef9603c2b43ab8e32ddfaeb101f1e5041109017681bf5d61e7a7b5.
-    # No cluster pulls it: the HUB's OpenShift GitOps repository server
-    # renders it when it builds the openshell policy (kustomize helmCharts,
-    # repo oci://ghcr.io/nvidia/openshell, version 0.1.6). Helm ignores the
-    # cluster's mirror sets, so mirroring the chart is not enough on its own:
-    # a disconnected hub also needs the policy pointed at the copy. See
-    # manifests/chart/kustomization.yaml in the fork.
-    - name: ghcr.io/nvidia/openshell/helm-chart:0.1.6
+    # No entry for the OpenShell Helm chart: nothing pulls it from a registry.
+    # The fork vendors it (policies/community/openshell/vendor/helm-chart,
+    # NVIDIA's chart 0.1.6, OCI digest sha256:036f3fe3b0ef...), and the hub's
+    # OpenShift GitOps repository server renders the openshell policy from
+    # that copy with no network access. Clusters never pulled the chart. The
+    # vendored copy's README records its digests and how to update it, in
+    # step with the image tag above.
