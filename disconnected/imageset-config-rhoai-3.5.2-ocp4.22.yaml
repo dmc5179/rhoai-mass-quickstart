@@ -239,3 +239,10 @@ mirror:
     # mirrored by tag rather than digest, oc-mirror writes their redirects to
     # an ImageTagMirrorSet, not the ImageDigestMirrorSet. Apply both files.
     - name: quay.io/redhat-services-prod/rhel-lightspeed-tenant/rhel-knowledge-bridge:latest
+
+    # Hermes agent and Open WebUI, deployed by the fork's hermes-agent and
+    # open-webui policies. Digests match the policies' pinned image defaults;
+    # bump both together. Neither registry is Red Hat's, so the mirror host
+    # needs access to quay.io/aicatalyst and ghcr.io/open-webui.
+    - name: quay.io/aicatalyst/hermes-hermes-agent@sha256:1eb780739aeeb92e7c8f416ae57a0307405081f7fa0610fcffeac6914ea1ad60
+    - name: ghcr.io/open-webui/open-webui@sha256:03443b8de6b617da9d900edd09b4bf1cb0ddbfdcba6afb42c548336a0b821ded
