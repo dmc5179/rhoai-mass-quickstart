@@ -21,6 +21,7 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `checkup.sh` | Walk the whole RHOAI MaaS chain in dependency order and name the first broken link. Read-only. |
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `maas-user.sh` | Create the htpasswd user that mints MaaS keys, and the Secret the `htpasswd-users` policy waits for. Password in `secrets/maas-user.env`. |
+| `cluster-users.sh` | Create, update or remove named htpasswd logins for the people using the cluster (`apply john paul [--admin]`, `remove`, `status`). Prints the passwords to send; keeps them in `secrets/cluster-users.env`; adds the users to `maas-users` (and `cluster-admins` with `--admin`) in the hub values. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. |
 | `logs.sh` | List recent runs and whether they passed. |
 | `lib-logging.sh` | Shared logging, sourced by the phase scripts. |
