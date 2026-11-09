@@ -86,6 +86,19 @@ esac
 start_logging "maas-database" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 command -v aws >/dev/null || { echo "Error: the 'aws' CLI is not installed." >&2; exit 1; }
+
+# Credentials come from secrets/aws.env, as in phase 10. Without this the script
+# used whatever the calling shell had exported: from another account, or
+# nothing, and the first AWS call failed silently (its stderr is discarded).
+if [ -f "${ROOT}/secrets/aws.env" ]; then
+    # shellcheck disable=SC1091
+    . "${ROOT}/secrets/aws.env"
+fi
+aws sts get-caller-identity >/dev/null 2>&1 || {
+    echo "Error: AWS credentials are not valid. Check secrets/aws.env:" >&2
+    aws sts get-caller-identity 2>&1 | sed 's/^/       /' >&2
+    exit 1
+}
 [ "$PLATFORM" = "aws" ] || {
     echo "Error: this script provisions AWS RDS, but PLATFORM is '${PLATFORM}'." >&2
     echo "       On another platform use a managed database from that provider, or" >&2
@@ -199,7 +212,7 @@ if db_exists; then
     exit 1
 fi
 
-VPC_ID="$(stack_output VpcId)"
+VPC_ID="$(stack_output VpcId || true)"
 [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || {
     echo "Error: could not read VpcId from CloudFormation stack '${VPC_STACK_NAME}'." >&2
     exit 1

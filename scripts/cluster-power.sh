@@ -36,6 +36,18 @@ esac
 [ "$PLATFORM" = "aws" ] || { echo "Error: this script is AWS-only (PLATFORM=${PLATFORM})." >&2; exit 1; }
 command -v jq >/dev/null || { echo "Error: 'jq' is not installed." >&2; exit 1; }
 
+# Credentials come from secrets/aws.env, as in phase 10, not from whatever the
+# calling shell happens to have exported.
+if [ -f "${ROOT}/secrets/aws.env" ]; then
+    # shellcheck disable=SC1091
+    . "${ROOT}/secrets/aws.env"
+fi
+aws sts get-caller-identity >/dev/null 2>&1 || {
+    echo "Error: AWS credentials are not valid. Check secrets/aws.env:" >&2
+    aws sts get-caller-identity 2>&1 | sed 's/^/       /' >&2
+    exit 1
+}
+
 META="${CLUSTER_DIR}/metadata.json"
 [ -f "$META" ] || {
     echo "Error: ${META} not found - no cluster to act on." >&2
