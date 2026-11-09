@@ -1,7 +1,7 @@
 # Plan: park and resume the cluster on a schedule
 
-Status: **plan only, not started** (2026-11-08). Nothing here is
-implemented.
+Status: **plan only, not started** (2026-11-08; revised the same day after
+research). Nothing here is implemented.
 
 ## Goal
 
@@ -30,77 +30,99 @@ The simulation covers the user's IAM policies but not any organization
 service control policy RHDP may apply. The first real create (step 4 below,
 as a disabled schedule) is the final proof.
 
-## Design
+## Options compared (researched 2026-11-08)
+
+| Option | How it finds instances | Code to maintain | Verdict |
+|---|---|---|---|
+| **A.** Scheduler universal target `ec2:stopInstances` / `startInstances` (the shape Gemini suggested) | A fixed list of instance IDs in the schedule | None | **No.** Our IDs change: machines get replaced, the GPU set scales, spot workers come and go. One call covers every listed instance, so a single spot instance (which can't be stopped) fails the lot |
+| **B.** Scheduler universal target `ssm:startAutomationExecution`, running the AWS-managed `AWS-StopEC2Instance` / `AWS-StartEC2Instance` runbooks against a **tag** | `Targets: [{Key: "tag:kubernetes.io/cluster/<infraID>", Values: ["owned"]}]`, resolved on every run | None: AWS-managed runbooks | **Recommended** |
+| **C.** Systems Manager Quick Setup *Resource Scheduler* | Tag key and value you choose | None | Works, but it's console-oriented and creates its own State Manager plumbing. It is harder to script, review and tear down with the cluster |
+| **D.** Scheduler invoking a Lambda (the first draft of this plan) | Tag, in code | A Python function | Most control (ordering, spot termination, a 24-hour guard), but it's code we'd own. Keep it as the fallback if B can't handle spot cleanly |
+
+## Design (option B)
 
 ```
-EventBridge Scheduler  ──(cron, America/New_York)──►  Lambda "rhoai-power"
-   rhoai-park    Mon–Fri 19:00                          {"action": "park"}
-   rhoai-resume  Mon–Fri 07:00                          {"action": "resume"}
+EventBridge Scheduler (America/New_York)
+  rhoai-park    cron(0 19 ? * MON-FRI *)  ──► ssm:startAutomationExecution
+  rhoai-resume  cron(0 7 ? * MON-FRI *)        DocumentName: AWS-StopEC2Instance | AWS-StartEC2Instance
+                                               TargetParameterName: InstanceId
+                                               Targets: tag:kubernetes.io/cluster/<infraID> = owned
+                                               MaxConcurrency: 100%   MaxErrors: <see spot>
+                                               Parameters.AutomationAssumeRole: rhoai-power-automation
 ```
 
-**Why a Lambda rather than Scheduler's direct EC2 target.** Scheduler can call
-`ec2:StopInstances` directly (a "universal target"), but only with a fixed
-list of instance IDs. Our instance IDs change: machines get replaced, the GPU
-MachineSet scales, and spot workers come and go. The Lambda finds the
-cluster's instances by tag (`kubernetes.io/cluster/<infraID>: owned`) every
-time, the same way `cluster-power.sh` does.
+- Each tagged instance gets its own automation run, so one failure doesn't
+  stop the rest. The installer and the Machine API put that tag on every
+  cluster machine, so GPU and spot workers added later are picked up
+  automatically.
+- **Order:** none. The OpenShift 4.22 graceful-restart procedure says to
+  "start all cluster machines" and then check nodes and CSRs. It doesn't
+  require a start order on a cloud. Its control-plane-last note is about the
+  API VIP on platforms that have one.
+- **Two IAM roles:**
+  - `rhoai-power-scheduler`, assumed by `scheduler.amazonaws.com`: allows
+    `ssm:StartAutomationExecution` on the two runbooks, and `iam:PassRole` on
+    the automation role only;
+  - `rhoai-power-automation`, assumed by `ssm.amazonaws.com`: allows
+    `ec2:StopInstances` and `ec2:StartInstances` **only on instances
+    carrying the cluster tag** (`aws:ResourceTag` condition), plus
+    `ec2:DescribeInstances`.
 
-**What the Lambda does.** It mirrors `cluster-power.sh`, so there is one
-behaviour whichever way the cluster is parked:
+  That is much tighter than Gemini's `instance/*`.
+- **Spot (once implemented).** `StopInstances` fails on one-time spot
+  instances, so with B each spot instance's run fails on its own and the
+  instance keeps running and billing. Two ways to handle it:
+  1. allow those errors (`MaxErrors`) and have a third schedule terminate spot
+     instances using a small custom runbook. The MachineHealthCheck replaces
+     them on resume;
+  2. or move to option D for parking only.
 
-| Action | Order |
-|---|---|
-| park | Stop workers (including GPU), then the control plane. Spot instances can't be stopped (the Machine API creates one-time spot requests), so they are **terminated**; see below |
-| resume | Start the control plane, wait for the instances to be running, then start workers |
-
-**Spot instances.** The rules decided 2026-11-08 are that the control plane is
-never spot and at least 2 workers are never spot. Those are stopped and
-started normally. Spot workers and a spot GPU are terminated at park time. On
-resume, their Machines are gone, so they need replacing:
-
-- Option A: a MachineHealthCheck on the spot MachineSets, which the OpenShift
-  docs recommend for spot anyway. It deletes the dead Machines and the
-  MachineSet recreates them. No cluster access is needed from AWS.
-- Option B: scale the spot MachineSets to zero before parking, and back up on
-  resume. This needs cluster API access, which the Lambda doesn't have.
-
-The plan uses Option A. It has to be proven on the cluster.
+  Decide when spot is built. Until then nothing in the cluster is spot.
+- **The 24-hour rule.** OpenShift says to confirm the cluster has been
+  installed for at least 24 hours before shutting it down, while certificates
+  complete their first rotation. The install script for the schedules refuses
+  to enable them until `clusters/<name>/metadata.json` is 24 hours old.
+- **After resume.** The docs say CSRs may need manual approval if
+  certificates expired while the cluster was off, which isn't expected for
+  overnight or weekend parking. Check the expiry date before a long shutdown:
+  `oc -n openshift-kube-apiserver-operator get secret kube-apiserver-to-kubelet-signer -o jsonpath='{.metadata.annotations.auth\.openshift\.io/certificate-not-after}'`.
+  `checkup.sh` should flag pending CSRs.
+- **Confirmed on this account (2026-11-08):** `AWS-StopEC2Instance` and
+  `AWS-StartEC2Instance` exist, each taking `InstanceId` (StringList) and
+  `AutomationAssumeRole`. The Scheduler API answers, and IAM allows creating
+  schedules and roles.
 
 ## Steps
 
-1. **`scripts/power-schedule.sh {install|status|remove|run-now} [--dry-run]`**,
-   following the repo's script conventions (`lib-logging.sh`, `--dry-run`,
-   reuse rather than duplicate). It creates:
-   - IAM role `rhoai-power-lambda`: allows `ec2:DescribeInstances`, and
-     `ec2:StopInstances`, `ec2:StartInstances` and `ec2:TerminateInstances`
-     conditioned on the cluster tag, plus CloudWatch Logs;
-   - Lambda `rhoai-power` (Python, boto3), with the infra ID as an
-     environment variable read from `clusters/<name>/metadata.json`;
-   - IAM role `rhoai-power-scheduler`: `lambda:InvokeFunction` on that
-     function only;
-   - schedule group `rhoai`, with two schedules built from `cluster.env`
-     settings: `POWER_PARK_CRON`, `POWER_RESUME_CRON`, `POWER_TZ`
-     (default `America/New_York`).
-2. **Safety rules in the Lambda:**
-   - Do nothing during the first 24 hours after install. The cluster's
-     certificates rotate then, and OpenShift's graceful shutdown guidance
-     says not to shut down in that window.
-   - Park only if every instance is in a steady state.
-   - Resume is idempotent.
-   - A `"dryRun": true` input logs what it would do and changes nothing.
-3. **This repo's other scripts:**
-   - `cluster-power.sh status` shows the schedules and their next run.
-   - `cluster-power.sh` and the Lambda share the same tag selection and
-     ordering.
-   - `90-destroy-cluster.sh` calls `power-schedule.sh remove`, so schedules
-     don't fire against a deleted cluster.
-   - `checkup.sh` warns about pending CSRs after a resume (see below).
-4. **Prove it:**
-   - install with the schedules disabled, then `run-now --dry-run`;
-   - enable a park 10 minutes ahead and a resume 20 minutes ahead;
-   - check `checkup.sh` is green afterwards.
-5. **Docs:** `docs/operations.md` (parking on a schedule, what resume looks
-   like) and a line in the deploy runbook.
+1. **`scripts/power-schedule.sh {install|status|remove|run-now park|resume} [--dry-run]`**:
+   - reads the infra ID from `clusters/<name>/metadata.json`;
+   - creates or updates the two roles and the schedule group `rhoai`, with the
+     two schedules from `cluster.env` (`POWER_PARK_CRON`,
+     `POWER_RESUME_CRON`, `POWER_TZ`, default `America/New_York`;
+     `POWER_SCHEDULE_ENABLED`);
+   - `run-now` calls `aws ssm start-automation-execution` with the same input,
+     to test without waiting for the cron.
+
+   It follows the repo conventions: `lib-logging.sh`, `--dry-run`, and reuse
+   rather than duplicate.
+2. **`cluster-power.sh status`** lists the schedules and their next run.
+   **`90-destroy-cluster.sh`** calls `power-schedule.sh remove`.
+3. **Prove it:**
+   - install with the schedules disabled;
+   - `run-now park --dry-run`, then a real `run-now park` and `run-now resume`;
+   - check `aws ssm describe-automation-executions` shows one execution per
+     instance;
+   - check `checkup.sh` is green after resume;
+   - then enable the schedules.
+4. **Docs:** `docs/operations.md` and the runbook.
+
+## Sources
+
+- [Using universal targets in EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/managing-targets-universal.html): ARN format `arn:aws:scheduler:::aws-sdk:service:apiAction`, `Input` shaped like the API request, no read-only actions.
+- [SSM StartAutomationExecution API](https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_StartAutomationExecution.html): `Targets` (one item), `TargetParameterName`, `MaxConcurrency`, `MaxErrors`.
+- [Systems Manager Quick Setup Resource Scheduler](https://docs.aws.amazon.com/systems-manager/latest/userguide/quick-setup-scheduler.html): option C.
+- [re:Post: start/stop scheduling with EventBridge Scheduler and SSM Automation](https://repost.aws/articles/ARRCWqUo-CRwGq1ws2uwdsEQ/how-to-automate-start-stop-scheduling-for-non-production-aws-resources-using-eventbridge-scheduler-and-ssm-automation): the two-role pattern.
+- [OpenShift 4.22 Backup and restore: graceful shutdown and restart](https://access.redhat.com/documentation/en-us/openshift_container_platform/4.22/html-single/backup_and_restore/index): the 24-hour rule, start all machines, CSRs.
 
 ## Optional extras
 
