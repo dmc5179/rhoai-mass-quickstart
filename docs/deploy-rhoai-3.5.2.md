@@ -204,6 +204,22 @@ Re-run `status` until the policies settle. Policies are Pending while they
 wait on dependencies, which is not a failure. RHOAI is roughly 75 GB of images
 and the GPU node takes about 25 minutes, so give it time before debugging.
 
+**Expect a rolling reboot of every node, about 5 minutes after `adopt`.**
+AutoShift's node policies create the `master-node-config` and
+`worker-node-config` KubeletConfigs (reserved CPU and memory, `maxPods: 250`).
+The Machine Config Operator then cordons, drains and reboots each node in turn,
+GPU node included. That takes 30 to 45 minutes. While it runs, operator pods move:
+the RHOAI CSV briefly shows `Installing`, Kuadrant components drop to not ready,
+the DataScienceCluster dips to Not Ready, and the model restarts when the GPU
+node reboots. None of that is a fault. Watch it finish with:
+
+```bash
+oc get mcp                 # both pools UPDATED=True, UPDATING=False when done
+```
+
+The database and `maas-user` steps can run during the reboot. Hold the smoke
+test until both pools have finished.
+
 ### Check the operator pins
 
 Once the CSVs exist:
