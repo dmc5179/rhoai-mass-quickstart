@@ -456,7 +456,11 @@ PY
         if run get crd "$EF" >/dev/null; then
             if ! run get "$EF" payload-processing -n openshift-ingress >/dev/null; then
                 warn "no payload-processing EnvoyFilter in openshift-ingress" "maas-controller creates it; cannot tell whether the solution 7148630 fix is present."
-            elif run get "$EF" payload-processing -n openshift-ingress -o yaml | grep -q 'operation: REMOVE'; then
+            # Read into a variable first: with pipefail, `oc ... | grep -q` reports
+            # failure when grep exits on the first match and oc, still writing
+            # this long object, gets SIGPIPE. It gave a false "fix absent".
+            elif ef_yaml="$(run get "$EF" payload-processing -n openshift-ingress -o yaml)" \
+                 && grep -q 'operation: REMOVE' <<<"$ef_yaml"; then
                 ok "payload-processing EnvoyFilter carries the endpoint picker fix (solution 7148630)"
                 run get "$EF" maas-epp-after-ipp-workaround -n openshift-ingress >/dev/null && \
                     info "maas-epp-after-ipp-workaround is no longer needed; delete it: oc delete ${EF} maas-epp-after-ipp-workaround -n openshift-ingress"
