@@ -158,10 +158,22 @@ mirror:
 
         # ---------------------------------------------------------------------
         # OpenShell prerequisites
+        #
+        # agent-sandbox-operator: the Red Hat build of Agent Sandbox
+        # (Technology Preview), which serves the sandboxes.agents.x-k8s.io API
+        # the OpenShell gateway creates sandboxes through. Needs OpenShift
+        # 4.21.21 or later on 4.21. preview-0.9 is the package default and its
+        # only channel. Pinned to 0.9.0, the version validated with OpenShell
+        # v0.1.6-rhaiv.4. The bundle's relatedImages carry the controller and
+        # the sandbox router. Its CSV declares fips-compliant: false.
+        # The other three are optional: Kata isolation, Keycloak sign-in and
+        # SPIFFE agent identity.
         # ---------------------------------------------------------------------
-        - name: agent-sandbox-operator    # Preview
+        - name: agent-sandbox-operator
           channels:
-            - name: preview-0.9           # head 0.9.0
+            - name: preview-0.9
+              minVersion: 0.9.0
+              maxVersion: 0.9.0
         - name: sandboxed-containers-operator
           channels:
             - name: stable                # head 1.13.1
@@ -170,7 +182,7 @@ mirror:
             - name: stable-v26.6          # head 26.6.7-opr.1
         - name: openshift-zero-trust-workload-identity-manager
           channels:
-            - name: stable-v1             # head 1.1.2; ztwim-1.2 adds FIPS support
+            - name: stable-v1             # head 1.1.3 (2026-11-09). FIPS: KB 7144070 says unsupported; ztwim-1.2 (SPIRE-637) unreleased
 
         # ---------------------------------------------------------------------
         # Observability: the llm-d dashboards, and setup-maas.sh
@@ -244,3 +256,41 @@ mirror:
     # needs access to quay.io/aicatalyst and ghcr.io/open-webui.
     - name: quay.io/aicatalyst/hermes-hermes-agent@sha256:1eb780739aeeb92e7c8f416ae57a0307405081f7fa0610fcffeac6914ea1ad60
     - name: ghcr.io/open-webui/open-webui@sha256:03443b8de6b617da9d900edd09b4bf1cb0ddbfdcba6afb42c548336a0b821ded
+
+    # OpenShell gateway, supervisor, sandbox runtime and CLI: Red Hat builds
+    # from Konflux, deployed by the fork's community/openshell policy. The
+    # supervisor and sandbox runtime are pulled only when the first sandbox is
+    # created, so a missing entry passes the install and fails then; the CLI is
+    # the image the openshell-maas-provider CronJob and scripts/openshell-cli.sh
+    # run. The cluster pulls all four BY TAG (the policy's
+    # autoshift.io/openshell-version label), so they are mirrored by tag: an
+    # ImageDigestMirrorSet redirects digest pulls only, and oc-mirror writes
+    # the redirect for these to the ImageTagMirrorSet. Apply both files. Bump
+    # the tag together with the label and the chart below. Index digests when
+    # this file was written, to verify a mirror run:
+    #   odh-openshell-gateway     sha256:bd2d7c9084b80b8d3d8ef92d00a27b963b35168fad84cd862b7f91fd9c488c3e
+    #   odh-openshell-supervisor  sha256:626b91a0f53393dac0d591c142b81100916aa66b4e65444b5527672b5533fe86
+    #   odh-openshell-sandbox     sha256:0cde11346e68485907c22d3c9b30802e52cf16e3853720a864ac8347bb68f6ef
+    #   odh-openshell-cli         sha256:9128f07cbb29b87472a71e09a4b164ec35ea0484712cc31028209f8d1e5291c4
+    # quay.io/opendatahub is not a Red Hat product registry, so the mirror host
+    # needs access to it and the cluster a redirect for quay.io/opendatahub.
+    - name: quay.io/opendatahub/odh-openshell-gateway:v0.1.6-rhaiv.4
+    - name: quay.io/opendatahub/odh-openshell-supervisor:v0.1.6-rhaiv.4
+    - name: quay.io/opendatahub/odh-openshell-sandbox:v0.1.6-rhaiv.4
+    - name: quay.io/opendatahub/odh-openshell-cli:v0.1.6-rhaiv.4
+
+    # The image a sandbox runs when it names none: the policy's default_image,
+    # pulled by tag. 9.8 is a floating minor tag; its index digest when this
+    # file was written was
+    #   sha256:f26ef64172ea61f5ac5ba4be8c5c738bf8760b22b3e5148ce7b40f7308ab32db
+    - name: registry.access.redhat.com/ubi9/ubi-minimal:9.8
+
+    # The OpenShell Helm chart, an OCI artifact (application/vnd.oci.image.
+    # manifest.v1+json), sha256:036f3fe3b0ef9603c2b43ab8e32ddfaeb101f1e5041109017681bf5d61e7a7b5.
+    # No cluster pulls it: the HUB's OpenShift GitOps repository server
+    # renders it when it builds the openshell policy (kustomize helmCharts,
+    # repo oci://ghcr.io/nvidia/openshell, version 0.1.6). Helm ignores the
+    # cluster's mirror sets, so mirroring the chart is not enough on its own:
+    # a disconnected hub also needs the policy pointed at the copy. See
+    # manifests/chart/kustomization.yaml in the fork.
+    - name: ghcr.io/nvidia/openshell/helm-chart:0.1.6
