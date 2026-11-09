@@ -554,54 +554,63 @@ PY
     fi
 fi
 
-# --- workloads: Hermes agent and Open WebUI --------------------------------
-# Only when their policies are placed. Hermes mints its MaaS key once, at pod
-# start, so a pod that has run longer than its key's TTL can no longer reach
-# the model until it restarts; that is checked here from the bootstrap log.
-# Hermes logs no tool calls at default verbosity: the tool loop is recorded in
-# its state.db, not in the pod log.
+# --- workloads: Hermes agent, Open WebUI and OpenShell ----------------------
+# Only when their policies are placed. Hermes and the OpenShell provider each
+# keep a MaaS key that they renew themselves, and record its expiry where this
+# can read it: Hermes on Secret hermes-maas-key (annotation
+# hermes.autoshift.io/expires-at), OpenShell on ConfigMap
+# openshell-maas-provider-state (expiresAt). Both are epoch seconds. A key that
+# is close to expiry means the renewal has not happened; the -key and
+# -provider-ready policies say the same thing on the hub. Hermes logs no tool
+# calls at default verbosity: the tool loop is recorded in its state.db.
+key_left() {   # $1 label, $2 expiry epoch, $3 hint, $4 renewal window in hours (default 168)
+    # Each key is renewed at the start of its renewal window (renewBefore,
+    # 168h by default). One still in the window two hours later means renewal
+    # is failing, days before the key actually stops working.
+    local left_h=$(( ($2 - $(date +%s)) / 3600 )) win="${4:-168}"
+    if [ "$left_h" -le 0 ]; then
+        bad "$1 MaaS key expired $(date -u -d "@$2" +%Y-%m-%dT%H:%MZ)" "$3"
+    elif [ "$left_h" -lt $(( win - 2 )) ]; then
+        warn "$1 MaaS key is ${left_h}h from expiry, inside its ${win}h renewal window and not renewed" "$3"
+    else
+        ok "$1 MaaS key valid until $(date -u -d "@$2" +%Y-%m-%d) (about $(( left_h / 24 )) days)"
+    fi
+}
 if want workloads; then
     PL="$(run get policy -n "$(run get managedcluster --no-headers | awk '{print $1}' | head -1)" --no-headers)"
-    if grep -q "policy-hermes-agent" <<<"$PL"; then
-        head_ "Workloads: Hermes agent and Open WebUI"
-        hns="$(run get deploy -A -l app.kubernetes.io/name=hermes-agent -o jsonpath='{.items[0].metadata.namespace}')"
-        hns="${hns:-hermes}"
-        for p in policy-hermes-agent-access policy-hermes-agent policy-hermes-agent-ready \
-                 policy-open-webui policy-open-webui-ready; do
+    pol_status() {   # report each named policy that is placed; skip the rest
+        local p st
+        for p in "$@"; do
             st="$(awk -v p="$p" '$1 ~ "\\."p"$" {print $3}' <<<"$PL")"
             [ -z "$st" ] && continue
             [ "$st" = "Compliant" ] && ok "${p} Compliant" || bad "${p} ${st}"
         done
-        hp="$(run get pods -n "$hns" -l app.kubernetes.io/name=hermes-agent -o name | head -1)"
-        if [ -z "$hp" ]; then
-            bad "no hermes-agent pod in ${hns}"
-        else
-            ready="$(run get "$hp" -n "$hns" -o jsonpath='{.status.containerStatuses[0].ready}')"
-            [ "$ready" = "true" ] && ok "hermes-agent pod Ready (${hp#pod/})" || bad "hermes-agent pod not Ready (${hp#pod/})"
-            hlog="$(run logs "$hp" -n "$hns" --all-containers --tail=-1)"
-            mint="$(grep -m1 -o '\[bootstrap\] minted MaaS key[^)]*)' <<<"$hlog" || true)"
-            if [ -n "$mint" ]; then
-                ok "${mint#\[bootstrap\] }"
-                ttl="$(sed -n 's/.*ttl \([0-9]*\)h.*/\1/p' <<<"$mint")"
-                started="$(run get "$hp" -n "$hns" -o jsonpath='{.status.startTime}')"
-                if [ -n "$ttl" ] && [ -n "$started" ]; then
-                    age_h=$(( ( $(date +%s) - $(date -d "$started" +%s) ) / 3600 ))
-                    left=$(( ttl - age_h ))
-                    if [ "$left" -le 0 ]; then
-                        bad "Hermes MaaS key expired ${age_h}h after pod start (ttl ${ttl}h)" \
-                            "Restart it: oc rollout restart deployment/hermes-agent -n ${hns}"
-                    elif [ "$left" -le 72 ]; then
-                        warn "Hermes MaaS key expires in about ${left}h (pod ${age_h}h old, ttl ${ttl}h)" \
-                            "Restart before then: oc rollout restart deployment/hermes-agent -n ${hns}"
-                    else
-                        ok "Hermes MaaS key valid for about ${left}h more"
-                    fi
-                fi
-            elif grep -q '403' <<<"$hlog"; then
+    }
+    if grep -qE "policy-(hermes-agent|open-webui)" <<<"$PL"; then
+        head_ "Workloads: Hermes agent and Open WebUI"
+        pol_status policy-hermes-agent-access policy-hermes-agent policy-hermes-agent-ready \
+                   policy-hermes-agent-key policy-open-webui policy-open-webui-ready
+        hns="$(run get deploy -A -l app.kubernetes.io/name=hermes-agent -o jsonpath='{.items[0].metadata.namespace}')"
+        if [ -n "$hns" ]; then
+            hp="$(run get pods -n "$hns" -l app.kubernetes.io/name=hermes-agent -o name | head -1)"
+            if [ -z "$hp" ]; then
+                bad "no hermes-agent pod in ${hns}"
+            else
+                ready="$(run get "$hp" -n "$hns" -o jsonpath='{.status.containerStatuses[0].ready}')"
+                [ "$ready" = "true" ] && ok "hermes-agent pod Ready (${hp#pod/})" || bad "hermes-agent pod not Ready (${hp#pod/})"
+            fi
+            exp="$(run get secret hermes-maas-key -n "$hns" -o jsonpath='{.metadata.annotations.hermes\.autoshift\.io/expires-at}')"
+            if [[ "$exp" =~ ^[0-9]+$ ]]; then
+                key_left "Hermes" "$exp" "Its [bootstrap] log says why: oc logs deploy/hermes-agent -n ${hns} | grep bootstrap"
+                hlog="$(run logs deploy/hermes-agent -n "$hns" --tail=-1)"
+                renew="$(grep -o 'restart for key renewal at [^ ]*' <<<"$hlog" | tail -1 || true)"
+                [ -n "$renew" ] && info "Hermes will ${renew}"
+            elif [ -n "$hp" ] && run logs "$hp" -n "$hns" --tail=-1 | grep -q '403'; then
                 bad "Hermes could not mint a MaaS key (403)" \
                     "Its ServiceAccount group must be in the model's accessGroups and the subscription's owner groups."
             else
-                warn "no MaaS key mint in the hermes-agent log yet"
+                warn "no stored Hermes MaaS key (Secret ${hns}/hermes-maas-key)" \
+                    "The pod mints it at startup; read: oc logs deploy/hermes-agent -n ${hns} | grep bootstrap"
             fi
             info "Tool calls are not logged at default verbosity; Hermes records them in its state.db."
         fi
@@ -609,8 +618,52 @@ if want workloads; then
         if [ -n "$owns" ]; then
             route="$(run get route -n "$owns" -o jsonpath='{.items[0].spec.host}')"
             avail="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].status.availableReplicas}')"
-            [ "${avail:-0}" -ge 1 ] && ok "Open WebUI available at https://${route}" \
-                || bad "Open WebUI not available" "If its pod is in CreateContainerConfigError, the open-webui-admin Secret is missing."
+            proxy="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].spec.template.spec.containers[*].name}')"
+            [[ " $proxy " == *" oauth-proxy "* ]] && login="OpenShift login" || login="local accounts"
+            [ "${avail:-0}" -ge 1 ] && ok "Open WebUI available at https://${route} (${login})" \
+                || bad "Open WebUI not available" \
+                       "In local mode, CreateContainerConfigError means the open-webui-admin Secret is missing."
+        fi
+    fi
+    if grep -q "policy-openshell-gateway" <<<"$PL"; then
+        head_ "Workloads: OpenShell"
+        pol_status policy-agent-sandbox-operator-install policy-openshell-prereqs policy-openshell-namespace \
+                   policy-openshell-gateway policy-openshell-gateway-ready \
+                   policy-openshell-maas-provider policy-openshell-maas-provider-ready
+        ready="$(run get pod openshell-0 -n openshell -o jsonpath='{.status.containerStatuses[0].ready}')"
+        if [ "$ready" = "true" ]; then
+            ok "OpenShell gateway pod openshell-0 Ready"
+        else
+            bad "OpenShell gateway pod openshell-0 not Ready" \
+                "No pod at all usually means admission: oc -n openshell describe statefulset openshell | sed -n '/Events:/,\$p'"
+        fi
+        run get configmap openshell-additional-ca -n openshell >/dev/null \
+            && ok "ConfigMap openshell/openshell-additional-ca present (sandbox trust for MaaS TLS)" \
+            || bad "ConfigMap openshell/openshell-additional-ca missing" \
+                   "Sandboxes will not trust the cluster ingress certificate; check policy-openshell-namespace."
+        sbx="$(run get sandboxes.agents.x-k8s.io -n openshell --no-headers | wc -l)"
+        info "Sandboxes in openshell: ${sbx}"
+        if grep -q "policy-openshell-maas-provider" <<<"$PL"; then
+            exp="$(run get configmap openshell-maas-provider-state -n openshell -o jsonpath='{.data.expiresAt}')"
+            if [[ "$exp" =~ ^[0-9]+$ ]]; then
+                key_left "OpenShell provider" "$exp" \
+                    "The provider CronJob renews it; read its last run: oc -n openshell logs job/\$(oc -n openshell get jobs -o name --sort-by=.metadata.creationTimestamp | tail -1 | cut -d/ -f2)"
+            else
+                warn "OpenShell provider has no recorded MaaS key yet (ConfigMap openshell/openshell-maas-provider-state)" \
+                    "It appears after the provider CronJob's first successful run, every 15 minutes by default."
+            fi
+            # Runs every 15 minutes by default; two missed intervals is worth a look.
+            last="$(run get cronjob openshell-maas-provider -n openshell -o jsonpath='{.status.lastSuccessfulTime}')"
+            failed="$(run get jobs -n openshell -o jsonpath='{range .items[*]}{.metadata.name} {.status.failed}{"\n"}{end}' \
+                      | awk '$1 ~ /^openshell-maas-provider/ && $2 > 0' | wc -l)"
+            if [ -z "$last" ]; then
+                warn "OpenShell provider CronJob has never succeeded"
+            elif [ $(( $(date +%s) - $(date -d "$last" +%s) )) -gt 1800 ]; then
+                warn "OpenShell provider CronJob last succeeded at ${last}, over 30 minutes ago (${failed} failed job(s) kept)" \
+                    "Read the newest failed job: oc -n openshell get jobs | grep openshell-maas-provider"
+            else
+                ok "OpenShell provider CronJob last succeeded at ${last}"
+            fi
         fi
     fi
 fi
