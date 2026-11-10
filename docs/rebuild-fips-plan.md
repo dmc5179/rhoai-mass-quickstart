@@ -39,9 +39,28 @@ What a rebuild loses, by design:
 
 What survives: the VPC stack `rhoai-vpc` and the extra database subnet (`90-destroy-cluster.sh`
 leaves both), everything under `secrets/`, the fork, and the untracked per-cluster values file
-`$AUTOSHIFT_DIR/autoshift/values/clusters/local-cluster.yaml`.
+`$AUTOSHIFT_DIR/autoshift/values/clusters/local-cluster.yaml`. So do the agent-lab S3 bucket and
+IAM user, unless they are removed first (step 2).
 
 ## 2. Tear down
+
+First, the agent-lab pipeline storage from
+[agent-lab-phase0/README.md](agent-lab-phase0/README.md). Its S3 bucket and IAM user live in the
+AWS account, outside the cluster and the VPC stack, so nothing below removes them and they keep
+billing (and holding a valid access key) after the cluster is gone:
+
+```bash
+. secrets/aws.env
+B=rhoai-130382331273-agent-lab; U=rhoai-dspa-agent-lab
+aws s3 rm "s3://$B" --recursive && aws s3api delete-bucket --bucket "$B"
+for k in $(aws iam list-access-keys --user-name "$U" --query 'AccessKeyMetadata[].AccessKeyId' --output text); do
+  aws iam delete-access-key --user-name "$U" --access-key-id "$k"; done
+aws iam delete-user-policy --user-name "$U" --policy-name s3-agent-lab-bucket
+aws iam delete-user --user-name "$U"
+rm -f secrets/pipelines-s3-agent-lab.env
+```
+
+The project itself (`agent-lab`) goes with the cluster. Then the database and the cluster:
 
 ```bash
 scripts/maas-database.sh destroy       # skip if reusing the database. Deletes the instance, its
