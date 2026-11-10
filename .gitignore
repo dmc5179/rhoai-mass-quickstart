@@ -12,6 +12,7 @@
 !/secrets/.gitkeep
 !/secrets/aws.env.example
 !/secrets/ibm.env.example
+!/secrets/rhokp.env.example
 
 # Installer state: kubeconfig, kubeadmin password, and the metadata required to
 # destroy the cluster. Keep it locally, keep it out of git.
