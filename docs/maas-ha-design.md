@@ -102,13 +102,31 @@ in this stack, and it would put rate-limit state on the same nodes it protects.
    bootstrap.
 6. `scripts/checkup.sh`: add a line reporting replicas and PDBs for the MaaS path.
 
+## Tier 1 results (sandbox141, 2026-11-10)
+
+Built as `policy-maas-api-ha` (openshift-ai-maas) and `policy-rhcl-ha` (connectivity-link); live and
+Compliant. Measured with a loop of one small chat completion a second through the MaaS gateway:
+
+| Test | Failures | Finding |
+|---|---|---|
+| `maas-api` replica count after 8 minutes | none | The `maas.opendatahub.io/maas-api-replicas` annotation holds across maas-controller reconciles |
+| Restart Limitador within one token window | none | Counters survive on disk: 299843 tokens remaining before and after |
+| Drain worker A (a `maas-api` and an Authorino replica, Limitador, 5 of 10 gateway pods) | 0 of 116 | Limitador was unavailable 24 s (EBS detach and re-attach) with no errors: the rate-limit check fails open |
+| Delete only the two payload-processing pods | 2 of 51 (about 2 s) | It is an Envoy `ext_proc` with `failure_mode_allow: true`; its replica count is not configurable (`Config` has only `limitadorScrapeInterval` and `usageLogging`) |
+| Drain worker B (the other `maas-api` and Authorino replicas, 3 gateway pods, both payload-processing services), twice | 34 of 208, then 11 of 117 | All HTTP 500 with an empty body and no `server` header, in the first 13 to 53 s of the drain. The external ELB kept the node `InService` throughout (health check `HTTP:10256/healthz`, 10 s x 6), so it is not the load balancer |
+
+So tier 1 turns a drain from a full outage into a burst of gateway 500s lasting seconds, sometimes
+none. The burst lines up with the eviction of in-path pods (Authorino, `maas-api`, payload-processing)
+before Envoy's endpoints catch up, with the auth filter failing closed. Closing it needs graceful
+termination (preStop delays) or retries on components owned by maas-controller and the Kuadrant
+operator, which expose no setting for either: a candidate RFE. Not yet isolated which of the three
+evictions contributes most.
+
 ## Open questions
 
-- Are `payload-processing` and `payload-pre-processing` (owned by `maas-controller`) scalable, and
-  are they in the request path for every call? If so they are the remaining single points.
+- Answered: `payload-processing` is in the path but fails open and is not scalable; see tier 1 results.
 - Does the Kuadrant operator reconcile `Limitador.spec.replicas` and `spec.pdb` back to defaults?
-  Test on the cluster before relying on it.
-- Does `disk` storage work with Limitador under the restricted SCC on this cluster (PVC
-  permissions)? **Unverified.**
+  (Tier 1 only sets `spec.storage`, which it keeps.) Test before tier 2 relies on it.
+- Answered: `disk` storage works under the restricted SCC; the PVC bound and counters persist.
 - How does the cluster autoscaler interact with the PDBs: scale-down skips a node whose pods
   cannot be evicted, which is the intended effect, but it should be watched once both are live.
