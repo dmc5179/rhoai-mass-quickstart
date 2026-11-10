@@ -233,22 +233,21 @@ mirror:
 
     # Red Hat Offline Knowledge Portal (RHOKP): Red Hat documentation,
     # solutions, errata and CVEs served locally, so a disconnected site keeps
-    # access to them.
+    # access to them, plus the RHEL Knowledge Bridge MCP server that serves
+    # RHOKP to Lightspeed (docs/rhokp-mcp-autoshift-plan.md).
     #
-    # Both entries below track `:latest`, so every oc-mirror run captures
-    # whatever build the tag points to at that moment. The knowledge bridge in
-    # particular is rebuilt often. Digests when this file was written, for
-    # pinning if a run picks up a bad build:
-    #   rhokp-rhel9            sha256:8a355cd8949d8d03e68012e805638fe99d0021381c71fac8a1df07c33e20f44b
-    #   rhel-knowledge-bridge  sha256:43c3123fe7dcfde94a46e78e6909dd80f70e502a843c34500a6b39648f065238
-    # Pin with name: <repo>@sha256:<digest> in place of :latest.
-    - name: registry.redhat.io/offline-knowledge-portal/rhokp-rhel9:latest
-    # Bridges RHOKP content to Lightspeed. Note the source registry is quay.io
-    # (redhat-services-prod), not registry.redhat.io, so the cluster needs a
-    # mirror redirect for quay.io as well. Because both RHOKP entries are
-    # mirrored by tag rather than digest, oc-mirror writes their redirects to
-    # an ImageTagMirrorSet, not the ImageDigestMirrorSet. Apply both files.
-    - name: quay.io/redhat-services-prod/rhel-lightspeed-tenant/rhel-knowledge-bridge:latest
+    # Pinned by digest, from registry.redhat.io, matching the image defaults of
+    # the fork's rhokp-mcp policy; bump both places together. The cluster pulls
+    # them by digest, so oc-mirror's ImageDigestMirrorSet covers them; no
+    # quay.io redirect is needed any more. RHOKP republishes weekly (7-10 GB
+    # each), so bump on a cadence you choose. Verified against the registry
+    # on 2026-11-10.
+    #   rhokp-rhel9                    tag 1.3.0-1793303796
+    #   rhel-knowledge-bridge-rhel10   tag v1.0.2-1793868366 (Developer Preview,
+    #                                  part of the RHEL command-line assistant
+    #                                  for disconnected environments)
+    - name: registry.redhat.io/offline-knowledge-portal/rhokp-rhel9@sha256:1ac156d35e14315011687c3740443e07d66c8d7d5be6839920cb2af7d8c65ce1
+    - name: registry.redhat.io/rhel-cla/rhel-knowledge-bridge-rhel10@sha256:99fd47d068c6b99db3068a7276c80e1d0bf98d3a1e908cae2d23b2b4571f7086
 
     # Hermes agent and Open WebUI, deployed by the fork's hermes-agent and
     # open-webui policies. Digests match the policies' pinned image defaults;
