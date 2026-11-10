@@ -1,0 +1,157 @@
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  annotations:
+    notebooks.opendatahub.io/inject-auth: 'true'
+    notebooks.opendatahub.io/last-image-selection: s2i-generic-data-science-notebook:3.5
+    notebooks.opendatahub.io/last-size-selection: Small
+    opendatahub.io/image-display-name: Jupyter | Data Science | CPU | Python 3.12
+    opendatahub.io/username: danclark
+    openshift.io/display-name: Agent workbench
+  labels:
+    app: agent-workbench
+    opendatahub.io/dashboard: 'true'
+    opendatahub.io/odh-managed: 'true'
+  name: agent-workbench
+  namespace: agent-lab
+spec:
+  template:
+    spec:
+      containers:
+      - env:
+        - name: NOTEBOOK_ARGS
+          value: --ServerApp.port=8888 --ServerApp.token='' --ServerApp.password=''
+            --ServerApp.base_url=/notebook/agent-lab/agent-workbench --ServerApp.quit_button=False
+        - name: JUPYTER_IMAGE
+          value: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/s2i-generic-data-science-notebook:3.5
+        - name: PIP_CERT
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: REQUESTS_CA_BUNDLE
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: SSL_CERT_FILE
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: PIPELINES_SSL_SA_CERTS
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: KF_PIPELINES_SSL_SA_CERTS
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        - name: GIT_SSL_CAINFO
+          value: /etc/pki/tls/custom-certs/ca-bundle.crt
+        image: image-registry.openshift-image-registry.svc:5000/redhat-ods-applications/s2i-generic-data-science-notebook:3.5
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /notebook/agent-lab/agent-workbench/api
+            port: notebook-port
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        name: agent-workbench
+        ports:
+        - containerPort: 8888
+          name: notebook-port
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /notebook/agent-lab/agent-workbench/api
+            port: notebook-port
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: '2'
+            memory: 8Gi
+          requests:
+            cpu: '1'
+            memory: 4Gi
+        volumeMounts:
+        - mountPath: /opt/app-root/src
+          name: agent-workbench-storage
+        - mountPath: /etc/pki/tls/custom-certs
+          name: trusted-ca
+          readOnly: true
+        - mountPath: /opt/app-root/pipeline-runtimes/
+          name: runtime-images
+        - mountPath: /opt/app-root/runtimes
+          name: elyra-dsp-details
+        workingDir: /opt/app-root/src
+      - args:
+        - --secure-listen-address=0.0.0.0:8443
+        - --upstream=http://127.0.0.1:8888/
+        - --logtostderr=true
+        - --v=0
+        - --proxy-endpoints-port=8444
+        - --config-file=/etc/kube-rbac-proxy/config-file.yaml
+        - --tls-cert-file=/etc/tls/private/tls.crt
+        - --tls-private-key-file=/etc/tls/private/tls.key
+        - --auth-header-fields-enabled=true
+        - --auth-header-user-field-name=X-Auth-Request-User
+        - --auth-header-groups-field-name=X-Auth-Request-Groups
+        image: registry.redhat.io/rhoai/odh-kube-rbac-proxy-rhel9@sha256:ce8eb36be58b878376e64146c0a4ec281666da63b0f13765689a77117f1771c2
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8444
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: kube-rbac-proxy
+        ports:
+        - containerPort: 8443
+          name: kube-rbac-proxy
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 8444
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /etc/kube-rbac-proxy
+          name: kube-rbac-proxy-config
+        - mountPath: /etc/tls/private
+          name: kube-rbac-proxy-tls-certificates
+      enableServiceLinks: false
+      serviceAccountName: agent-workbench
+      volumes:
+      - name: agent-workbench-storage
+        persistentVolumeClaim:
+          claimName: agent-workbench-storage
+      - configMap:
+          name: workbench-trusted-ca-bundle
+          optional: true
+        name: trusted-ca
+      - configMap:
+          name: pipeline-runtime-images
+          optional: true
+        name: runtime-images
+      - name: elyra-dsp-details
+        secret:
+          optional: true
+          secretName: ds-pipeline-config
+      - configMap:
+          defaultMode: 420
+          name: agent-workbench-kube-rbac-proxy-config
+        name: kube-rbac-proxy-config
+      - name: kube-rbac-proxy-tls-certificates
+        secret:
+          defaultMode: 420
+          secretName: agent-workbench-kube-rbac-proxy-tls
+

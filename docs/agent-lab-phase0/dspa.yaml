@@ -1,0 +1,46 @@
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  annotations: {}
+  name: dspa
+  namespace: agent-lab
+spec:
+  apiServer:
+    artifactSignedURLExpirySeconds: 60
+    caBundleFileMountPath: ''
+    caBundleFileName: ''
+    cacheEnabled: true
+    deploy: true
+    enableOauth: true
+    enableSamplePipeline: false
+    pipelineStore: kubernetes
+  database:
+    disableHealthCheck: false
+    mariaDB:
+      deploy: true
+      pipelineDBName: mlpipeline
+      pvcSize: 10Gi
+      username: mlpipeline
+  dspVersion: v2
+  objectStorage:
+    disableHealthCheck: false
+    enableExternalRoute: false
+    externalStorage:
+      basePath: ''
+      bucket: rhoai-130382331273-agent-lab
+      host: s3.us-east-2.amazonaws.com
+      port: ''
+      region: us-east-2
+      s3CredentialsSecret:
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+        secretName: pipelines-s3
+      scheme: https
+  persistenceAgent:
+    deploy: true
+    numWorkers: 2
+  podToPodTLS: true
+  scheduledWorkflow:
+    cronScheduleTimezone: UTC
+    deploy: true
+
