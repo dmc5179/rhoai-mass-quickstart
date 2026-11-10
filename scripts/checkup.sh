@@ -585,6 +585,63 @@ PY
     fi
 fi
 
+# --- maas resilience and usage ----------------------------------------------
+# What the openshift-ai-maas HA/telemetry policies and connectivity-link's
+# rhcl-ha set up, checked from the objects they produce. A policy cannot run
+# PromQL, so the telemetry flow check (the counters carry a subscription label)
+# lives here.
+if want maas && run get maastenantconfigs.maas.opendatahub.io default-tenant -n models-as-a-service >/dev/null; then
+    head_ "MaaS resilience and usage"
+    want_api="$(run get maastenantconfigs.maas.opendatahub.io default-tenant -n models-as-a-service \
+                -o jsonpath='{.metadata.annotations.maas\.opendatahub\.io/maas-api-replicas}')"
+    have_api="$(run get deploy maas-api -n redhat-ai-gateway-infra -o jsonpath='{.status.availableReplicas}')"
+    if [ -n "$want_api" ]; then
+        [ "${have_api:-0}" = "$want_api" ] && ok "maas-api ${have_api}/${want_api} replicas (annotation on default-tenant)" \
+            || bad "maas-api has ${have_api:-0} available, the annotation asks for ${want_api}" \
+                   "maas-controller renders the count from maas.opendatahub.io/maas-api-replicas; check its log."
+    else
+        info "maas-api runs ${have_api:-?} replica(s); no HA annotation (policy-maas-api-ha off)"
+    fi
+    have_auth="$(run get deploy authorino -n kuadrant-system -o jsonpath='{.status.availableReplicas}')"
+    info "Authorino ${have_auth:-?} available replica(s)"
+    for pdb in redhat-ai-gateway-infra/maas-api kuadrant-system/authorino; do
+        ns="${pdb%/*}"; nm="${pdb#*/}"
+        line="$(run get pdb "$nm" -n "$ns" -o jsonpath='{.status.disruptionsAllowed} {.status.currentHealthy} {.status.expectedPods}')"
+        [ -z "$line" ] && continue
+        read -r allowed healthy expected <<<"$line"
+        if [ "${allowed:-0}" -ge 1 ]; then ok "PDB ${pdb}: ${healthy}/${expected} healthy, ${allowed} disruption allowed"
+        else warn "PDB ${pdb} allows no disruption (${healthy}/${expected} healthy)" \
+                  "A node drain will wait on this until another replica is Ready."; fi
+    done
+    lstore="$(run get limitadors.limitador.kuadrant.io limitador -n kuadrant-system -o jsonpath='{.spec.storage}')"
+    case "$lstore" in
+        *disk*)  ok "Limitador counters on disk (survive a restart)" ;;
+        *redis*) ok "Limitador counters in Redis (shared across replicas)" ;;
+        *)       info "Limitador counters in memory: a restart resets every token window (policy-rhcl-ha off)" ;;
+    esac
+    tel="$(run get maastenantconfigs.maas.opendatahub.io default-tenant -n models-as-a-service -o jsonpath='{.spec.telemetry.enabled}')"
+    if [ "$tel" = "true" ]; then
+        # The flow check: the platform Prometheus scrapes Limitador
+        # (kuadrant-system carries the cluster-monitoring label).
+        res="$(timeout 60 "$OC" exec -n openshift-monitoring prometheus-k8s-0 -c prometheus -- \
+                curl -s --get http://localhost:9090/api/v1/query \
+                --data-urlencode 'query=count by (subscription) (authorized_hits)' 2>/dev/null \
+               | python3 -I -c 'import json,sys
+r=json.load(sys.stdin)["data"]["result"]
+lab=[x["metric"].get("subscription","") for x in r]
+print("labelled" if any(lab) else ("unlabelled" if r else "none"))' 2>/dev/null)"
+        case "$res" in
+            labelled)   ok "MaaS telemetry on, and authorized_hits carries a subscription label" ;;
+            unlabelled) bad "MaaS telemetry on, but authorized_hits has no subscription label" \
+                            "Check TelemetryPolicy maas-telemetry in openshift-ingress (policy-maas-telemetry-ready)." ;;
+            none)       info "MaaS telemetry on; no authorized_hits series yet (run scripts/35-smoke-test.sh)" ;;
+            *)          warn "MaaS telemetry on, but the Prometheus query failed" ;;
+        esac
+    else
+        info "MaaS telemetry off (policy-maas-telemetry not enabled)"
+    fi
+fi
+
 # --- workloads: Hermes agent, Open WebUI and OpenShell ----------------------
 # Only when their policies are placed. Hermes and the OpenShell provider each
 # keep a MaaS key that they renew themselves, and record its expiry where this
