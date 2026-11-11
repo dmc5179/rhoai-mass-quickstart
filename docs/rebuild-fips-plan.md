@@ -134,6 +134,31 @@ Different from the first build, and now automatic:
   takes its default user role from its environment on first start, so the one-time Admin Panel
   fix is not needed.
 
+### 5a. Before the first bootstrap: two upstream checks
+
+The fresh cluster is the one chance to test things that only happen on a first install.
+
+- **The AutoShift fork is in sync.** Bootstrap from `rhoai-maas` only after the sync with upstream
+  and the PR versions of the leader-worker-set, connectivity-link, gpu-nodes and
+  nvidia-gpu-operator policies has been reviewed and merged into it, so the cluster runs the code
+  under upstream review.
+- **Upstream PR #326 (the MultiClusterHub hook race), on a cluster with no ACM yet.**
+  `50-autoshift.sh` avoids the race by installing ACM with `--no-hooks` and creating the
+  MultiClusterHub itself, so it cannot test the fix. Install ACM once from the PR branch with its
+  hooks instead, before `bootstrap`:
+
+  ```bash
+  cd ~/workspace/autoshiftv2-wt-281        # branch pr/mch-hook-webhook-wait
+  ~/workspace/rhoai-mass-aws/bin/helm upgrade --install advanced-cluster-management advanced-cluster-management \
+      -n default --timeout 20m             # hooks on: crd-check now waits for the webhook
+  ~/workspace/rhoai-mass-aws/bin/oc get pods -n open-cluster-management | grep crd-check   # its log names each wait
+  ~/workspace/rhoai-mass-aws/bin/oc get multiclusterhubs.operator.open-cluster-management.io -A
+  ```
+
+  Pass: the MultiClusterHub exists after this first install, with no rerun. Then run
+  `scripts/50-autoshift.sh bootstrap` as usual; it finds the MultiClusterHub and leaves it alone.
+  Comment the result on #326, including the `crd-check` log.
+
 ## 6. The FIPS checks
 
 Functional first, then the known risks:

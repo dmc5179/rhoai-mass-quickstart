@@ -144,6 +144,20 @@ then expect to fix what the scaffolder leaves out:
   CI, because the harness builds its synthetic cluster from the first
   non-empty declaration.
 
+What upstream review (bcarr-rh, November 2026) expects of a new policy:
+
+- Settings beyond an on/off label go in `config.<component>`, keyed by the
+  label base exactly as `config.<component>.versions` already is (hyphenated,
+  so `config.connectivity-link`, not `connectivityLink`). Merge it over a base
+  spec, the shape of `ansible-automation-platform/manifests/aap-instance.yaml`.
+- "Does this apply to this cluster" is a placement predicate, not an `if` in
+  the template.
+- A check that finds nothing to check calls `fail` with a message, with a
+  `customMessage` in the generator config. Never emit an impossible object
+  to force NonCompliant, and never render empty.
+- Copy provider fields (subnet, security groups) from the worker MachineSet in
+  the same zone; never rebuild them from the infrastructure ID.
+
 Gate everything. **`make test` is not the whole gate** — CI also runs a prose
 linter as a separate job, and a docs or comment change can pass `make test`
 and still fail CI:
@@ -199,8 +213,10 @@ Several defects were found by reading these rather than by hitting them:
   causes, namespace labelling, the ClusterIP question
 - `~/workspace/offline-models/CLAUDE.md` — `LLMInferenceService` versions,
   tool-calling parsers per model, ModelCar sourcing
-- `docs/autoshift-upstream-issues.md` — defects found in AutoShift: fourteen
-  filed (#276–#285, #287–#290; #283 withdrawn), PRs #292–#294 merged, #291 open
+- `docs/autoshift-upstream-issues.md` — every issue and PR we have raised
+  upstream, with its current state. Update PRs with new commits on top and a
+  plain push, never a force-push: the maintainer merges `main` into PR
+  branches from GitHub
 
 ## Conventions
 

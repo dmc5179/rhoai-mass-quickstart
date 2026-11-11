@@ -4,25 +4,46 @@ Found while adding the RHOAI MaaS policies on the `rhoai-maas` branch. Each is
 reproducible from a clean clone and verified against the source, not inferred.
 Ordered by how early a new contributor hits them.
 
-**Status:** issues 1–5 are filed as
-[#276](https://github.com/auto-shift/autoshiftv2/issues/276)–[#280](https://github.com/auto-shift/autoshiftv2/issues/280).
-Issues 6–9 are filed as
-[#281](https://github.com/auto-shift/autoshiftv2/issues/281)–
-[#285](https://github.com/auto-shift/autoshiftv2/issues/285).
-Issues 11–14 are filed as
-[#287](https://github.com/auto-shift/autoshiftv2/issues/287),
-[#288](https://github.com/auto-shift/autoshiftv2/issues/288),
-[#289](https://github.com/auto-shift/autoshiftv2/issues/289) and
-[#290](https://github.com/auto-shift/autoshiftv2/issues/290).
+**Status (2026-11-11).** Live state is on GitHub; this table is a snapshot.
 
-Each of the three with a fix has a PR open against it:
-[#291](https://github.com/auto-shift/autoshiftv2/pull/291) (NFD vendor label,
-closes #287), [#292](https://github.com/auto-shift/autoshiftv2/pull/292)
-(disconnected-mirror `mustonlyhave`, closes #288),
-[#293](https://github.com/auto-shift/autoshiftv2/pull/293) (adoption docs,
-closes #289), plus
-[#294](https://github.com/auto-shift/autoshiftv2/pull/294) closing the older
-#276. #290 has no PR — it asks for a design change, not a fix.
+Issues filed:
+
+| Issue | Subject | State | Fixed by |
+|---|---|---|---|
+| #276 | `GOTOOLCHAIN=local` blocks the validation suite | Closed | PR #294 (merged) |
+| #277 | Scaffolders omit `placementBindingDefaults` | Closed | PR #310 (merged) |
+| #278 | Scaffolded policy names over 40 characters | Closed | PR #311 (merged) |
+| #279 | `--dependency` doubles the `policy-` prefix | Closed | PR #312 (merged) |
+| #280 | `generate-policy.sh` creates no README | Closed | PR #313 (merged) |
+| #281 | MultiClusterHub hook races the operator webhook | Open | PR #326 (open; needs one fresh ACM install to confirm) |
+| #282 | AWS node policies reconstruct the subnet | Open | PR #325 (open) |
+| #283 | GPU operator OperatorGroup | Closed, not planned | Not an upstream bug: the policy was not upstream. Folded into PR #323 |
+| #284 | infra-nodes reads an AWS-only field | Open | PR #309 (open, review changes pushed) |
+| #285 | ACM shadows the machine short names | Closed | PR #308 (merged) |
+| #287 | NFD labels PCI devices by class | Open | Fixed by the maintainer in #303 (vendor labels by default); PR #324 adds rules keyed by name. Our PR #291 was closed as superseded |
+| #288 | disconnected-mirror `musthave` on lists | Closed | PR #292 (merged) |
+| #289 | `mustonlyhave` does not strip metadata on adoption | Closed | PR #293 (merged) |
+| #290 | `adopt` activates every policy at once | Open | Design request, no PR |
+| #321 | Harness: synthetic config overrides leak into the hub config | Closed | PR #322 (merged) |
+
+Policy PRs for the RHOAI MaaS stack, reshaped to the maintainer's conventions (a `config.<component>`
+section merged over a base spec; applicability in placement predicates; readiness checks that call
+`fail` rather than render empty and report Compliant):
+
+| PR | Policy | State |
+|---|---|---|
+| #315 | leader-worker-set | Open, review changes pushed |
+| #316 | connectivity-link | Open, review changes pushed |
+| #317 | gpu-nodes | Open, review changes pushed |
+| #323 | nvidia-gpu-operator (replaces #83 at the maintainer's request) | Open |
+| #324 | node-feature-discovery: `nodeFeatureRules` keyed by name | Open |
+
+Still to come, in dependency order: cluster-autoscaler, openshift-ai, openshift-ai-maas,
+openshift-lightspeed.
+
+How these PRs are updated: review changes go on top as new signed commits and a plain push, never a
+rebase and force-push. The maintainer merges `main` into PR branches from GitHub, and a force-push
+would discard that.
 
 `policies/stable/ztwim` is **excluded from the split**. Upstream
 [PR #246](https://github.com/auto-shift/autoshiftv2/pull/246) implements the
