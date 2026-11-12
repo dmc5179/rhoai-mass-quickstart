@@ -123,6 +123,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
            listener clash       *.${zone}
            listener workaround  *.api.${zone}
          DNSPolicy ${POLICY_NAME} -> Gateway ${GW_NAME}, providerRefs ${SECRET_NAME}
+         HTTPRoutes ${GW_NAME}-clash (probe.dnstest...) and ${GW_NAME}-workaround (probe.api.dnstest...), one per listener
     4. Wait up to ${TIMEOUT}s, then expect:
          *.${zone}      Ready=False  "multiple zones found for host"
          *.api.${zone}  Ready=True   zone api.${zone}, record present in Route 53
@@ -422,8 +423,39 @@ spec:
     name: ${GW_NAME}
   providerRefs:
     - name: ${SECRET_NAME}
+---
+# Connectivity Link creates DNSRecords only for listeners with an attached route; without these
+# the DNSPolicy reports Enforced with "no routes attached to any gateway listeners" and nothing
+# reaches Route 53. No backends: the route only has to attach, and no traffic is sent to it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${GW_NAME}-clash
+  namespace: ${NS_TEST}
+spec:
+  parentRefs:
+    - name: ${GW_NAME}
+      sectionName: clash
+  hostnames:
+    - "probe.${zone}"
+  rules:
+    - {}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ${GW_NAME}-workaround
+  namespace: ${NS_TEST}
+spec:
+  parentRefs:
+    - name: ${GW_NAME}
+      sectionName: workaround
+  hostnames:
+    - "probe.api.${zone}"
+  rules:
+    - {}
 EOF
-    echo "    applied Secret, Gateway, DNSPolicy"
+    echo "    applied Secret, Gateway, DNSPolicy, and one HTTPRoute per listener"
 
     echo "==> Waiting up to ${TIMEOUT}s for the Gateway address and both DNSRecords"
     local deadline=$(( $(date +%s) + TIMEOUT )) clash_ready="" work_ready="" n
