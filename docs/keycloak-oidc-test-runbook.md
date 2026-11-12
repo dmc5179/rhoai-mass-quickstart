@@ -8,8 +8,8 @@ the session so the session records results against them.
 | # | Question | Source of the claim today |
 |---|---|---|
 | a | With Keycloak issuing 5-minute access tokens, does the RHOAI gateway break after about 5 minutes when `GatewayConfig spec.cookie.refresh` is at its default `1h`, and does `4m` fix it? | Code: `getCookieSettings` defaults (rhods-operator `rhoai-3.5`), API field comment |
-| b | On the switch, does the operator keep the old OpenShift OAuth client secret in `kube-auth-proxy-creds` and ignore `spec.oidc.clientSecretRef`, and does delete + `rollout restart` fix it? | Code: `getAuthProxySecretValues`; RHOAIENG-62691 |
-| c | Does the customer checklist in [customer/external-oidc-keycloak-switch.md](customer/external-oidc-keycloak-switch.md) work end to end: console, `oc login`, dashboard, MaaS key minting and a model call, Gen AI playground, Lightspeed? | Docs, partly inferred |
+| b | On the switch, does the operator keep the old OpenShift OAuth client secret in `kube-auth-proxy-creds` and ignore `spec.oidc.clientSecretRef`, and does delete + `rollout restart` fix it? | Code: `getAuthProxySecretValues` (a known, partly fixed upgrade bug in the same function) |
+| c | Does the end-to-end switch checklist work: console, `oc login`, dashboard, MaaS key minting and a model call, Gen AI playground, Lightspeed? | Docs, partly inferred |
 | d | The points that document marks unverified: why the playground keeps working, whether MaaS accepts Keycloak tokens through TokenReview, what removing `spec.oidc` does on rollback | Inference |
 
 The gateway mode cannot be switched on its own: the operator reads
@@ -85,7 +85,7 @@ hash of the client secret.
 
 Expected if the code reading is right:
 
-- `kube-auth-proxy-creds` client ID becomes `rhoai-gateway` (RHOAIENG-62691's fix), but the client
+- `kube-auth-proxy-creds` client ID becomes `rhoai-gateway` (after the earlier upgrade-bug fix), but the client
   secret hash is **unchanged** and differs from Keycloak's.
 - Signing in to the dashboard in a private window: Keycloak login succeeds, then the callback fails;
   kube-auth-proxy logs a token-exchange error with `unauthorized_client` or `invalid_client`.
@@ -100,7 +100,7 @@ reuse does not happen on 3.5.2: record that and correct the draft
 `switch-gateway --regen-creds` deletes `kube-auth-proxy-creds`, waits for the operator to regenerate
 it, then runs `oc rollout restart deployments.apps/kube-auth-proxy -n openshift-ingress`. Expected:
 the client secret hash now matches Keycloak's and the dashboard login works. Also note whether
-the pods restarted **before** the manual restart (RHOAIENG-62691 saw the automatic restart not
+the pods restarted **before** the manual restart (the automatic restart sometimes does not
 fire).
 
 ### Step 6: cookie refresh against the 5-minute token (question a)
@@ -131,7 +131,7 @@ session cookie at T+0, 2, 6 and 12 minutes, without following redirects. Run it 
 It depends on parsing Keycloak's login page; if it cannot find the form it says so and the manual
 procedure stands.
 
-### Step 7: the customer checklist and the open questions (questions c, d)
+### Step 7: the switch checklist and the open questions (questions c, d)
 
 `scripts/keycloak-oidc.sh verify` (optionally `--user maas-user`):
 
@@ -139,7 +139,7 @@ procedure stands.
   server sees (`oc auth whoami`).
 - MaaS: mint a key with each token at `/maas-api/v1/api-keys`. This answers whether maas-api's
   TokenReview accepts Keycloak tokens, and with which audience. A 401 for one token type and 201 for
-  the other is a real finding for the customer document. Then a chat completion with the minted key,
+  the other is a real finding to record. Then a chat completion with the minted key,
   and the key revoked.
 - kube-auth-proxy args and GatewayConfig conditions; the dashboard API with the ID token as a bearer.
 
