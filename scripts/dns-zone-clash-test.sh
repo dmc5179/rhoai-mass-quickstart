@@ -13,6 +13,11 @@
 #   --gateway-class <c>    GatewayClass for the test Gateway (default: discovered from
 #                          the cluster's Kuadrant gateways, e.g. maas-default-gateway)
 #   --timeout <seconds>    How long run waits for the Gateway and DNSRecords (default 900)
+#   --no-routes            run only: apply the Gateway and DNSPolicy WITHOUT HTTPRoutes,
+#                          save the DNSPolicy status and the DNSRecord list, and stop.
+#                          Shows that a DNSPolicy on a Gateway with no attached routes
+#                          reports success and writes nothing. A plain run afterwards
+#                          reuses everything and adds the routes.
 #   --dry-run              Print what would be done. Makes no AWS or cluster calls.
 #
 # What run builds, under the sandbox's public base zone <base>:
@@ -61,6 +66,7 @@ LABEL="${DNS_TEST_LABEL:-dnstest}"
 GATEWAY_CLASS="${GATEWAY_CLASS:-}"
 TIMEOUT=900
 DRY_RUN=0
+NO_ROUTES=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,6 +74,7 @@ while [ $# -gt 0 ]; do
         --gateway-class) GATEWAY_CLASS="$2"; shift 2 ;;
         --timeout)       TIMEOUT="$2"; shift 2 ;;
         --dry-run)       DRY_RUN=1; shift ;;
+        --no-routes)     NO_ROUTES=1; shift ;;
         -h|--help)       sed -n '2,52p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "dns-zone-clash-test.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
@@ -75,7 +82,7 @@ done
 
 case "$ACTION" in
     run|status|teardown) ;;
-    *) echo "Usage: scripts/dns-zone-clash-test.sh {run|status|teardown} [--label l] [--gateway-class c] [--timeout s] [--dry-run]" >&2; exit 2 ;;
+    *) echo "Usage: scripts/dns-zone-clash-test.sh {run|status|teardown} [--label l] [--gateway-class c] [--timeout s] [--no-routes] [--dry-run]" >&2; exit 2 ;;
 esac
 [[ "$LABEL" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || {
     echo "Error: --label must be a single lowercase DNS label, got '${LABEL}'." >&2; exit 2; }
@@ -95,6 +102,7 @@ IAM_USER="${CLUSTER_NAME}-dns-zone-clash-test"
 IAM_POLICY="route53-dns-zone-clash-test"
 CREDS_FILE="${ROOT}/secrets/dns-zone-clash-test.env"
 EVIDENCE="${ROOT}/logs/dns-zone-clash-test-$(date +%Y%m%d-%H%M%S)-dnsrecords.yaml"
+POLICY_EVIDENCE="${EVIDENCE%-dnsrecords.yaml}-dnspolicy-noroutes.yaml"
 
 [ "$PLATFORM" = "aws" ] || { echo "Error: PLATFORM is '${PLATFORM}'; this test needs AWS Route 53." >&2; exit 1; }
 
@@ -124,6 +132,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
            listener workaround  *.api.${zone}
          DNSPolicy ${POLICY_NAME} -> Gateway ${GW_NAME}, providerRefs ${SECRET_NAME}
          HTTPRoutes ${GW_NAME}-clash (probe.dnstest...) and ${GW_NAME}-workaround (probe.api.dnstest...), one per listener
+         (skipped with --no-routes, which instead saves the DNSPolicy status and stops)
     4. Wait up to ${TIMEOUT}s, then expect:
          *.${zone}      Ready=False  "multiple zones found for host"
          *.api.${zone}  Ready=True   zone api.${zone}, record present in Route 53
@@ -423,7 +432,17 @@ spec:
     name: ${GW_NAME}
   providerRefs:
     - name: ${SECRET_NAME}
----
+EOF
+
+    if [ "$NO_ROUTES" -eq 1 ]; then
+        "$OC" delete httproutes.gateway.networking.k8s.io "${GW_NAME}-clash" "${GW_NAME}-workaround" \
+            -n "$NS_TEST" --ignore-not-found >/dev/null
+        echo "    applied Secret, Gateway and DNSPolicy, NO HTTPRoutes (--no-routes)"
+        no_routes_evidence "$api_id"
+        return
+    fi
+
+    "$OC" apply -f - >/dev/null <<EOF
 # Connectivity Link creates DNSRecords only for listeners with an attached route; without these
 # the DNSPolicy reports Enforced with "no routes attached to any gateway listeners" and nothing
 # reaches Route 53. No backends: the route only has to attach, and no traffic is sent to it.
@@ -497,6 +516,36 @@ EOF
 
     [ "$ok" -eq 1 ] || return 1
     echo "==> Both expectations hold. Run 'scripts/dns-zone-clash-test.sh teardown' when done."
+}
+
+# no_routes_evidence <api-zone-id>: wait for the DNSPolicy to settle, then save its
+# status and report what reached the cluster and Route 53.
+no_routes_evidence() {
+    local deadline=$(( $(date +%s) + 300 )) enforced="" programmed=""
+    echo "==> Waiting up to 300s for the Gateway address and the DNSPolicy Enforced condition"
+    until [ "$(date +%s)" -ge "$deadline" ]; do
+        programmed="$("$OC" get gateways.gateway.networking.k8s.io "$GW_NAME" -n "$NS_TEST" \
+            -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null || true)"
+        enforced="$("$OC" get dnspolicies.kuadrant.io "$POLICY_NAME" -n "$NS_TEST" \
+            -o jsonpath='{.status.conditions[?(@.type=="Enforced")].status}' 2>/dev/null || true)"
+        [ "$programmed" = "True" ] && [ -n "$enforced" ] && break
+        echo "    $(date +%T) Gateway Programmed=${programmed:--} DNSPolicy Enforced=${enforced:--}"
+        sleep 15
+    done
+    # Let the policy controller reconcile more than once against the programmed Gateway.
+    sleep 60
+    "$OC" get dnspolicies.kuadrant.io "$POLICY_NAME" -n "$NS_TEST" -o yaml > "$POLICY_EVIDENCE"
+    echo "==> DNSPolicy status (full YAML: logs/$(basename "$POLICY_EVIDENCE"))"
+    "$OC" get dnspolicies.kuadrant.io "$POLICY_NAME" -n "$NS_TEST" \
+        -o jsonpath='{range .status.conditions[*]}    {.type}={.status} reason={.reason} message="{.message}"{"\n"}{end}'
+    echo "    Gateway: Programmed=${programmed:-none} address=$("$OC" get gateways.gateway.networking.k8s.io \
+        "$GW_NAME" -n "$NS_TEST" -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)"
+    echo "    Listener attachedRoutes: $("$OC" get gateways.gateway.networking.k8s.io "$GW_NAME" \
+        -n "$NS_TEST" -o jsonpath='{range .status.listeners[*]}{.name}={.attachedRoutes} {end}')"
+    echo "    DNSRecords in ${NS_TEST}: $("$OC" get dnsrecords.kuadrant.io -n "$NS_TEST" --no-headers 2>/dev/null | wc -l)"
+    echo "    Records in api zone (excluding apex NS/SOA): $(aws route53 list-resource-record-sets \
+        --hosted-zone-id "$1" --query "length(ResourceRecordSets[?Type!='NS' && Type!='SOA'])" --output text)"
+    echo "==> Next: 'run' (without --no-routes) adds the routes; then 'teardown'."
 }
 
 # record_field <rootHost> <jsonpath-body>: a field of the DNSRecord for that root host.

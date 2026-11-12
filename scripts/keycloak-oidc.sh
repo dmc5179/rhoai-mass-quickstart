@@ -549,12 +549,18 @@ cmd_switch_ocp() {
     step "authentications.config.openshift.io/cluster -> type OIDC (OCP 4.22 section 8.2)"
     # Usernames and groups unprefixed, so existing User/Group RBAC subjects and
     # MaaS group names keep matching (danclark stays danclark).
-    local patch
+    # EXTRA_AUDIENCES (comma-separated client IDs) adds more clients the API server accepts tokens
+    # for, e.g. applications that call MaaS with their users' tokens in TokenReview mode.
+    local patch extra_aud=""
+    if [ -n "${EXTRA_AUDIENCES:-}" ]; then
+        extra_aud="$(tr ',' '\n' <<<"$EXTRA_AUDIENCES" | sed '/^$/d; s/.*/, "&"/' | tr -d '\n')"
+        echo "    extra audiences: ${EXTRA_AUDIENCES}"
+    fi
     patch="$(cat <<EOF
 {"spec": {"type": "OIDC", "webhookTokenAuthenticator": null, "oidcProviders": [{
   "name": "${OIDC_PROVIDER_NAME}",
   "issuer": {"issuerURL": "$(issuer_url)",
-             "audiences": ["${CLIENT_CONSOLE}", "${CLIENT_CLI}", "${CLIENT_GATEWAY}"],
+             "audiences": ["${CLIENT_CONSOLE}", "${CLIENT_CLI}", "${CLIENT_GATEWAY}"${extra_aud}],
              "issuerCertificateAuthority": {"name": "${CA_CONFIGMAP}"}},
   "claimMappings": {"username": {"claim": "preferred_username", "prefixPolicy": "NoPrefix"},
                     "groups": {"claim": "groups"}},
