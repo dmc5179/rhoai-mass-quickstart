@@ -20,11 +20,14 @@ Issues filed:
 | #283 | GPU operator OperatorGroup | Closed, not planned | Not an upstream bug: the policy was not upstream. Folded into PR #323 |
 | #284 | infra-nodes reads an AWS-only field | Open | PR #309 (open, review changes pushed) |
 | #285 | ACM shadows the machine short names | Closed | PR #308 (merged) |
-| #287 | NFD labels PCI devices by class | Open | Fixed by the maintainer in #303 (vendor labels by default); PR #324 adds rules keyed by name. Our PR #291 was closed as superseded |
+| #287 | NFD labels PCI devices by class | Closed 2026-11-18 (by us, citing #303) | Fixed by the maintainer in #303 (vendor labels by default); PR #324 adds rules keyed by name. Our PR #291 was closed as superseded |
 | #288 | disconnected-mirror `musthave` on lists | Closed | PR #292 (merged) |
 | #289 | `mustonlyhave` does not strip metadata on adoption | Closed | PR #293 (merged) |
 | #290 | `adopt` activates every policy at once | Open | Design request, no PR |
 | #321 | Harness: synthetic config overrides leak into the hub config | Closed | PR #322 (merged) |
+| #336 | `generate-imageset-config.sh` mirrors only channel heads, so pinned operators cannot install disconnected | Open (filed 2026-11-13) | `pr/imageset-version-pins` 74516b60 (rebased on main 2026-11-19), not pushed; asks the maintainer whether release mode honours pins (815 to 1455 images) |
+| #337 | Disconnected mirrors miss the Service Mesh 3 version the ingress operator installs for Gateway API | Open (filed 2026-11-13; premise corrected 2026-11-19: the ingress operator runs istiod itself, the image is in the bundle `GATEWAY_API_OPERATOR_VERSION` names) | `pr/imageset-gateway-api-mesh` 3c6be75d, rebased on main and reworded, stacked on #336's branch, not pushed |
+| #349 | `_example.yaml` pins `trident-operator.v25.06.0`, absent from the v4.22 certified catalog | Open (filed 2026-11-19; correction comment added) | PR #350 pins v26.6.2. The scheduled channel-update script never lists trident; separately it exits silently when pointed at `_example.yaml` alone (greedy colon parse of `openshift-version`) |
 
 Policy PRs for the RHOAI MaaS stack, reshaped to the maintainer's conventions (a `config.<component>`
 section merged over a base spec; applicability in placement predicates; readiness checks that call
@@ -38,8 +41,14 @@ section merged over a base spec; applicability in placement predicates; readines
 | #323 | nvidia-gpu-operator (replaces #83 at the maintainer's request) | Open |
 | #324 | node-feature-discovery: `nodeFeatureRules` keyed by name | Open |
 
-Still to come, in dependency order: cluster-autoscaler, openshift-ai, openshift-ai-maas,
-openshift-lightspeed.
+Opened since: #327 (cluster-autoscaler). openshift-lightspeed is upstream as the maintainer's own
+#331, so our `pr/openshift-lightspeed` is superseded.
+
+Still to come, in dependency order: openshift-ai, openshift-ai-maas, openshift-ai-models (branches
+pushed to the fork, no upstream PR yet), then model-egress, the OpenShell operators, gitops-workloads,
+htpasswd-users and mcp-gateway. The #327 follow-up (worker and infra node policies release
+`spec.replicas` once a MachineAutoscaler manages the MachineSet, using the annotation check proved
+live on gpu-nodes on 2026-11-19) waits for #309 and #325.
 
 How these PRs are updated: review changes go on top as new signed commits and a plain push, never a
 rebase and force-push. The maintainer merges `main` into PR branches from GitHub, and a force-push

@@ -130,22 +130,33 @@ If there is a gap, it belongs to OpenShift: whether the OpenShift disconnected
 documentation tells customers that the Gateway API needs `servicemeshoperator3`
 mirrored at a specific version. That hasn't been checked.
 
-**This may be changing, and needs checking.** Red Hat solution 7143483 (updated
-2026-08-21) says that under OCPBUGS-82146 and OCPBUGS-82147 the ingress operator
-"no longer automatically installs or manages the Service Mesh Operator
-subscription when Gateway API is enabled". It names 4.21.22 and 4.20.31 as
-fixed. That conflicts with what we recorded on 4.21.37 and 4.22.18, where the
-ingress operator still carries `GATEWAY_API_OPERATOR_VERSION`. Either it now
-deploys Istio without OLM, in which case the `servicemeshoperator3` entry may be
-unnecessary but the Istio images still have to come from somewhere, or the
-solution describes a narrower change. Check on the next cluster with:
+**Answered on OpenShift 4.22.18 (2026-11-19, live cluster).** Red Hat solution 7143483
+is right: the ingress operator no longer installs Service Mesh through OLM. There is no
+`servicemeshoperator3` Subscription, CSV or ClusterExtension anywhere on the cluster.
+Instead the ingress operator deploys istiod itself, through an embedded Helm library:
+Deployment `openshift-ingress/istiod-openshift-gateway`, labelled `managed-by: sail-library`,
+Istio 1.28.5 (the ingress operator's `ISTIO_VERSION=v1.28.5`), image
+`registry.redhat.io/openshift-service-mesh/istio-pilot-rhel9@sha256:4813bf7a...`.
+`GATEWAY_API_OPERATOR_VERSION=servicemeshoperator3.v3.3.1` is still set on the ingress
+operator. Nothing installs that operator any more, but the variable still names the Service Mesh
+release whose istiod image the ingress operator runs.
+
+The mirror entry is still needed. The istiod image is not in the OpenShift release payload. The
+bundle that `GATEWAY_API_OPERATOR_VERSION` names lists it as `images_v1_28_5_istiod`, and among
+the Service Mesh bundles in `redhat-operator-index` only `servicemeshoperator3.v3.3.1` carries
+that digest (checked against a local copy of the catalog: no channel head, 3.3.9 included, does).
+Mirroring 3.3.1 is what puts the image in the mirror. A different OpenShift z-stream can name a
+different bundle and Istio version, so re-check both after an update:
 
 ```bash
-oc get subscriptions.operators.coreos.com -A | grep servicemesh
+oc get deploy istiod-openshift-gateway -n openshift-ingress \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 oc get deploy ingress-operator -n openshift-ingress-operator \
-  -o jsonpath='{.spec.template.spec.containers[*].env}' | tr ',' '\n' | grep -i -e GATEWAY -e ISTIO
-oc get pods -n openshift-ingress -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}' | sort -u
+  -o jsonpath='{.spec.template.spec.containers[*].env}' | tr ',' '\n' | grep -i -e ISTIO -e GATEWAY
 ```
+
+Mirroring only the istiod image as an additional image should also work, and would be
+smaller; it has not been tested.
 
 ## What happens if you leave them out
 

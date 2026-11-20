@@ -94,22 +94,21 @@ mirror:
         # ---------------------------------------------------------------------
         # Gateway API (OpenShift Service Mesh 3)
         #
-        # No CSV for this ever appears on the cluster, which makes it easy to
-        # drop. The ingress operator installs it itself to run the Gateway API
-        # that the MaaS gateway is built on. From the 4.21 release payload's
-        # ingress-operator manifest:
-        #     GATEWAY_API_OPERATOR_CHANNEL = stable
-        #     GATEWAY_API_OPERATOR_VERSION = servicemeshoperator3.v3.3.1
-        #     ISTIO_VERSION                = v1.27.8
-        # The Istio images are NOT in the release payload. Without this entry
-        # there is no istiod, no gateway, and no MaaS.
+        # No Service Mesh operator is installed on the cluster, which makes this
+        # easy to drop. The ingress operator runs istiod itself for the Gateway
+        # API that the MaaS gateway is built on (seen on 4.22.18: Deployment
+        # openshift-ingress/istiod-openshift-gateway, managed-by sail-library,
+        # Istio 1.28.5, no servicemeshoperator3 Subscription or CSV; Red Hat
+        # solution 7143483). The istiod image is NOT in the release payload.
+        # Without it there is no istiod, no gateway, and no MaaS.
         #
-        # Pinned to 3.3.1: the stable head is 3.4.3, so a head-only mirror
-        # would leave out the version the ingress operator asks for. The 3.3.1
-        # bundle carries the Istio v1.27.8 images this OpenShift release runs.
-        # Re-check after any OpenShift z-stream update:
-        #   oc get deploy ingress-operator -n openshift-ingress-operator \
-        #     -o jsonpath='{.spec.template.spec.containers[*].env}' | tr ',' '\n' | grep GATEWAY_API
+        # Pinned to 3.3.1: the ingress operator's GATEWAY_API_OPERATOR_VERSION
+        # still names it (servicemeshoperator3.v3.3.1), and it is the one bundle
+        # in redhat-operator-index that carries the istio-pilot image this release
+        # runs (images_v1_28_5_istiod); no channel head does. Re-check after any
+        # OpenShift z-stream update:
+        #   oc get deploy istiod-openshift-gateway -n openshift-ingress \
+        #     -o jsonpath='{.spec.template.spec.containers[0].image}'
         # ---------------------------------------------------------------------
         - name: servicemeshoperator3
           channels:

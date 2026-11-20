@@ -709,11 +709,12 @@ what you find in this file.
    drifted once already. Checkup compares the running image with the CSV's
    `RELATED_IMAGE_RHAII_VLLM_CUDA_IMAGE`.
 
-6. **The Service Mesh question.** Red Hat solution 7143483 says the ingress
-   operator stops managing the `servicemeshoperator3` Subscription from 4.21.22,
-   which conflicts with what we saw on 4.22.18. Checkup prints the
-   Subscription and the ingress operator's `GATEWAY_API_OPERATOR_VERSION`; the
-   full set of commands is in
+6. **Service Mesh for the Gateway API.** Answered on 4.22.18: the ingress
+   operator runs istiod itself (Istio 1.28.5, no Service Mesh Subscription or
+   CSV), so solution 7143483 holds. The istiod image is still not in the
+   release payload and comes from the `servicemeshoperator3` 3.3.1 bundle, so
+   the mirror keeps that entry. Checkup prints the running istiod version and
+   image; details in
    [rhoai-disconnected-additional-images.md](rhoai-disconnected-additional-images.md#service-mesh-is-openshifts-dependency-not-rhoais).
 
 7. **Hermes under FIPS.** The current Hermes image calls `hashlib.md5()`
