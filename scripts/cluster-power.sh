@@ -3,7 +3,12 @@
 # cluster-power.sh - stop or start the cluster's EC2 instances to park it
 #                    without destroying it.
 #
-# Usage: scripts/cluster-power.sh {stop|start|status} [--wait]
+# Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]
+#
+# stop and start also stop and start the MaaS RDS database (scripts/maas-database.sh),
+# unless --keep-db. start brings the database up first and waits for it, because
+# maas-api will not start without it. AWS starts a stopped RDS instance again on its
+# own after 7 days, so a cluster parked longer than that pays for the database again.
 #
 # Finds nodes through the AWS Resource Groups Tagging API, using the cluster's
 # own infrastructure ID. Every resource the installer creates is tagged
@@ -21,16 +26,28 @@
 
 set -euo pipefail
 
+ORIG_ARGS=("$@")
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${ROOT}/cluster.env"
+. "${ROOT}/bin/ocp-env.sh"
+. "${ROOT}/scripts/lib-logging.sh"
+start_logging "cluster-power" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 ACTION="${1:-}"
 WAIT=0
-[ "${2:-}" = "--wait" ] && WAIT=1
+KEEP_DB=0
+shift || true
+for a in "$@"; do
+    case "$a" in
+        --wait)    WAIT=1 ;;
+        --keep-db) KEEP_DB=1 ;;
+        *) echo "Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]" >&2; exit 2 ;;
+    esac
+done
 
 case "$ACTION" in
     stop|start|status) ;;
-    *) echo "Usage: scripts/cluster-power.sh {stop|start|status} [--wait]" >&2; exit 2 ;;
+    *) echo "Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]" >&2; exit 2 ;;
 esac
 
 [ "$PLATFORM" = "aws" ] || { echo "Error: this script is AWS-only (PLATFORM=${PLATFORM})." >&2; exit 1; }
@@ -127,8 +144,13 @@ cost_summary() {
             --query 'length(NatGateways)' --output text 2>/dev/null || echo 0)"
         lbs="$(aws elbv2 describe-load-balancers \
             --query "length(LoadBalancers[?VpcId=='${vpc_id}'])" --output text 2>/dev/null || echo 0)"
+        # The MaaS database (scripts/maas-database.sh) lives in this VPC, outside the
+        # cluster's tags, and keeps billing while the nodes are stopped.
+        rds="$(aws rds describe-db-instances \
+            --query "DBInstances[?DBSubnetGroup.VpcId=='${vpc_id}'].[DBInstanceIdentifier,DBInstanceClass,DBInstanceStatus]" \
+            --output text 2>/dev/null | awk '{printf "%s%s (%s, %s)", sep, $1, $2, $3; sep=", "}')"
     else
-        nats=0; lbs=0
+        nats=0; lbs=0; rds=""
     fi
     eips="$(aws ec2 describe-addresses --query 'length(Addresses)' --output text 2>/dev/null || echo 0)"
 
@@ -146,12 +168,25 @@ cost_summary() {
                     hourly charge continues even with every node stopped
   Elastic IPs       ${eips} allocated
   Load balancers    ${lbs} in the VPC
+  RDS databases     ${rds:-none in the VPC}
+                    billed while available; stop/start here stop and start it too (unless --keep-db)
 ---------------------------------------------------------------------------
 Parking saves the compute charge only. To stop paying for the NAT gateway,
-EBS, and load balancers you have to destroy the cluster:
+EBS, and load balancers you have to destroy the cluster. The MaaS database is
+stopped and started with the nodes (use --keep-db to leave it running); AWS starts
+a stopped RDS instance again after 7 days. scripts/maas-database.sh destroy removes
+it. To destroy the cluster:
     scripts/90-destroy-cluster.sh            # keeps the VPC and its NAT
     scripts/90-destroy-cluster.sh --with-vpc # removes the NAT too
 EOF
+}
+
+# The MaaS database, through scripts/maas-database.sh (a no-op when there is none).
+db_power() {
+    [ "$KEEP_DB" -eq 1 ] && { echo "==> Leaving the MaaS database as it is (--keep-db)"; return 0; }
+    local w=""; [ "$WAIT" -eq 1 ] && w="--wait"
+    # shellcheck disable=SC2086
+    "${ROOT}/scripts/maas-database.sh" "$1" $w || echo "Warning: maas-database.sh $1 failed; check scripts/maas-database.sh status" >&2
 }
 
 case "$ACTION" in
@@ -163,7 +198,11 @@ case "$ACTION" in
     stop)
         # shellcheck disable=SC2046
         set -- $(workers running) $(masters running)
-        [ $# -gt 0 ] || { echo "Nothing running to stop."; exit 0; }
+        if [ $# -eq 0 ]; then
+            echo "Nothing running to stop."
+            db_power stop
+            exit 0
+        fi
         echo "==> Stopping $# instance(s): workers first, then control plane"
         aws ec2 stop-instances --instance-ids "$@" \
             --query 'StoppingInstances[].{id:InstanceId,state:CurrentState.Name}' --output table
@@ -172,6 +211,7 @@ case "$ACTION" in
             aws ec2 wait instance-stopped --instance-ids "$@"
             echo "    Done."
         fi
+        db_power stop
         STATES="$(aws ec2 describe-instances --instance-ids "$@" \
             --query 'Reservations[].Instances[].{id:InstanceId,state:State.Name,name:Tags[?Key==`Name`]|[0].Value,type:InstanceType}' \
             --output json 2>/dev/null || echo "$STATES")"
@@ -185,15 +225,43 @@ EOF
 
     start)
         # shellcheck disable=SC2046
+        # The database first: maas-api crash-loops without it. --wait here waits for it
+        # to be available before the nodes start.
+        db_power start
+        # shellcheck disable=SC2046
         set -- $(masters stopped) $(workers stopped)
         [ $# -gt 0 ] || { echo "Nothing stopped to start."; exit 0; }
         echo "==> Starting $# instance(s): control plane first, then workers"
-        aws ec2 start-instances --instance-ids "$@" \
-            --query 'StartingInstances[].{id:InstanceId,state:CurrentState.Name}' --output table
-        if [ "$WAIT" -eq 1 ]; then
-            echo "==> Waiting for all instances to reach 'running'"
-            aws ec2 wait instance-running --instance-ids "$@"
+        # One call per instance. A single StartInstances call for all of them fails as a
+        # whole when EC2 has no capacity for one instance type in the zone, which GPU
+        # types often hit (us-east-2a refused the g6.xlarge on 2026-11-19). Started one
+        # by one, the rest of the cluster comes up and the refused ones are named.
+        started=() refused=()
+        for id in "$@"; do
+            if out="$(aws ec2 start-instances --instance-ids "$id" \
+                    --query 'StartingInstances[0].CurrentState.Name' --output text 2>&1)"; then
+                printf '    %s %s\n' "$id" "$out"; started+=("$id")
+            else
+                printf '    %s NOT STARTED: %s\n' "$id" "$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+                refused+=("$id")
+            fi
+        done
+        if [ "$WAIT" -eq 1 ] && [ "${#started[@]}" -gt 0 ]; then
+            echo "==> Waiting for the started instances to reach 'running'"
+            aws ec2 wait instance-running --instance-ids "${started[@]}"
             echo "    Done."
+        fi
+        if [ "${#refused[@]}" -gt 0 ]; then
+            cat <<EOF
+
+${#refused[@]} instance(s) did not start. InsufficientInstanceCapacity means EC2 has none of
+that type in the zone right now; it usually frees up within hours. Retry with:
+
+    scripts/cluster-power.sh start --wait
+
+The cluster runs without them. Workloads that need them (a GPU model, for one) stay
+Pending, and while they do the cluster autoscaler may add a replacement machine.
+EOF
         fi
         cat <<EOF
 

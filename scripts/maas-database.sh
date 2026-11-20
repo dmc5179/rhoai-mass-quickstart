@@ -6,7 +6,13 @@
 # Usage: scripts/maas-database.sh create  [options]
 #        scripts/maas-database.sh status
 #        scripts/maas-database.sh secret            # re-create the k8s Secret only
+#        scripts/maas-database.sh stop  [--wait]    # stop the instance to save cost
+#        scripts/maas-database.sh start [--wait]    # start it again
 #        scripts/maas-database.sh destroy [--yes]
+#
+# stop/start: a stopped RDS instance bills only for its storage. AWS starts a
+# stopped instance again on its own after 7 days. scripts/cluster-power.sh calls
+# these, so parking the cluster parks the database too.
 #
 # Options for create:
 #   --ha                    Multi-AZ. A synchronous standby in a second zone with
@@ -58,6 +64,7 @@ DB_NAME="maas"
 DB_USER="maas"
 MAKE_SECRET=1
 ASSUME_YES=0
+WAIT=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -70,14 +77,15 @@ while [ $# -gt 0 ]; do
         --username)       DB_USER="$2"; shift 2 ;;
         --no-secret)      MAKE_SECRET=0; shift ;;
         --yes|-y)         ASSUME_YES=1; shift ;;
+        --wait)           WAIT=1; shift ;;
         -h|--help)        sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "maas-database.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
 
 case "$ACTION" in
-    create|status|destroy|secret) ;;
-    *) echo "Usage: scripts/maas-database.sh {create|status|secret|destroy} [options]" >&2; exit 2 ;;
+    create|status|destroy|secret|stop|start) ;;
+    *) echo "Usage: scripts/maas-database.sh {create|status|secret|stop|start|destroy} [options]" >&2; exit 2 ;;
 esac
 
 . "${ROOT}/cluster.env"
@@ -125,6 +133,57 @@ db_field() {
 }
 
 db_exists() { aws rds describe-db-instances --db-instance-identifier "$DB_ID" >/dev/null 2>&1; }
+
+# --- stop / start -----------------------------------------------------------
+# Idempotent: stopping a stopped instance, or starting a running one, is a no-op.
+# A missing instance is not an error, so cluster-power.sh can call these on a
+# cluster that never had a database.
+if [ "$ACTION" = "stop" ] || [ "$ACTION" = "start" ]; then
+    if ! db_exists; then
+        echo "No RDS instance named '${DB_ID}' in ${REGION}; nothing to ${ACTION}."
+        exit 0
+    fi
+    state="$(db_field DBInstanceStatus)"
+    if [ "$ACTION" = "stop" ]; then
+        case "$state" in
+            stopped)  echo "RDS ${DB_ID} is already stopped."; exit 0 ;;
+            stopping) echo "RDS ${DB_ID} is already stopping." ;;
+            available)
+                echo "==> Stopping RDS ${DB_ID} (it bills only for storage while stopped;"
+                echo "    AWS starts it again on its own after 7 days)"
+                aws rds stop-db-instance --db-instance-identifier "$DB_ID" \
+                    --query 'DBInstance.DBInstanceStatus' --output text ;;
+            *) echo "Error: RDS ${DB_ID} is '${state}'; it can only be stopped from 'available'." >&2; exit 1 ;;
+        esac
+        if [ "$WAIT" -eq 1 ]; then
+            echo "==> Waiting for RDS ${DB_ID} to stop"
+            aws rds wait db-instance-stopped --db-instance-identifier "$DB_ID" 2>/dev/null || \
+                until [ "$(db_field DBInstanceStatus)" = stopped ]; do sleep 20; done
+            echo "    Stopped."
+        fi
+    else
+        case "$state" in
+            available) echo "RDS ${DB_ID} is already available."; exit 0 ;;
+            starting)  echo "RDS ${DB_ID} is already starting." ;;
+            stopped)
+                echo "==> Starting RDS ${DB_ID}"
+                aws rds start-db-instance --db-instance-identifier "$DB_ID" \
+                    --query 'DBInstance.DBInstanceStatus' --output text ;;
+            stopping)
+                echo "==> RDS ${DB_ID} is still stopping; waiting before starting it"
+                until [ "$(db_field DBInstanceStatus)" = stopped ]; do sleep 20; done
+                aws rds start-db-instance --db-instance-identifier "$DB_ID" \
+                    --query 'DBInstance.DBInstanceStatus' --output text ;;
+            *) echo "Error: RDS ${DB_ID} is '${state}'; it can only be started from 'stopped'." >&2; exit 1 ;;
+        esac
+        if [ "$WAIT" -eq 1 ]; then
+            echo "==> Waiting for RDS ${DB_ID} to become available (usually a few minutes)"
+            aws rds wait db-instance-available --db-instance-identifier "$DB_ID"
+            echo "    Available."
+        fi
+    fi
+    exit 0
+fi
 
 # --- status -----------------------------------------------------------------
 if [ "$ACTION" = "status" ]; then

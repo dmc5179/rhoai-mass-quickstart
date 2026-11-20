@@ -245,6 +245,28 @@ if want policies; then
         nc="$(run get policy -n "$mc" --no-headers | awk '$3=="NonCompliant"{print "  "$1}')"
         pend="$(run get policy -n "$mc" --no-headers | awk '$3=="Pending"{print "  "$1}')"
         [ -z "$nc" ] && ok "no NonCompliant policies" || bad "NonCompliant policies" "$nc"
+        # A template error means the policy rendered nothing. After a values change
+        # (a config key renamed, as config.openshiftLightspeed -> config.openshift-lightspeed
+        # was), the rendered-config ConfigMap keeps the old keys until the next bootstrap.
+        for p in $(printf '%s\n' "$nc" | awk '{print $1}'); do
+            msg="$(run get policy "$p" -n "$mc" -o jsonpath='{.status.details[*].history[0].message}')"
+            case "$msg" in
+                *template-error*)
+                    info "${p#*.}: template error. If a values file changed since the last bootstrap, the"
+                    info "  rendered-config ConfigMap is stale: run scripts/50-autoshift.sh bootstrap." ;;
+            esac
+            if [ "${p#*.}" = policy-openshift-ai-ready ]; then
+                dsc="$(run get datasciencecluster -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].message}')"
+                [ -n "$dsc" ] && info "${p#*.}: DataScienceCluster says: ${dsc}"
+                # Seen 2026-11-19 after a resume: the OGX module kept Degraded=True from while
+                # the cluster was coming up, although its OGXServer had passed its health check
+                # since. A restart of the OGX root operator re-evaluates it.
+                case "$dsc" in *ogx*)
+                    info "  If every OGXServer reports HealthCheck=True (oc get ogxservers.ogx.io -A -o yaml), the flag is stale:"
+                    info "  oc rollout restart deploy/opendatahub-ogx-operator -n redhat-ods-applications" ;;
+                esac
+            fi
+        done
         if [ -n "$pend" ]; then
             info "Pending (waiting on a dependency, not itself a failure):"
             printf '%s\n' "$pend" | sed 's/^[[:space:]]*//; s/^/      /'
@@ -341,7 +363,14 @@ if want gpu; then
         [ "${gms:-0}" -gt 0 ] && bad "GPU MachineSet exists but no GPU node" \
             "$(run get machines.machine.openshift.io -n openshift-machine-api --no-headers | grep -- '-gpu-' | awk '{print "  "$1" "$2}' | head -3)"
     else
-        ok "${gnodes} GPU node(s)"
+        gready="$(run get nodes -l node-role.kubernetes.io/gpu --no-headers | awk '$2=="Ready"' | wc -l)"
+        if [ "${gready:-0}" -eq "${gnodes}" ]; then ok "${gnodes} GPU node(s), all Ready"
+        else
+            bad "$((gnodes - gready)) of ${gnodes} GPU node(s) not Ready" \
+                "$(run get nodes -l node-role.kubernetes.io/gpu --no-headers | awk '$2!="Ready"{print "  "$1" "$2}')"
+            info "After a resume, the GPU instance may not have started: EC2 refuses it when the zone has"
+            info "no capacity for the type. Check: scripts/cluster-power.sh status"
+        fi
         # The label the GPU operator gates on. Labelling by PCI class instead of
         # vendor yields pci-0300/pci-0302 and the operator deploys nothing.
         vend="$(run get nodes -l feature.node.kubernetes.io/pci-10de.present=true --no-headers | wc -l)"
@@ -358,9 +387,15 @@ if want gpu; then
             info "Check: oc get policy -A | grep nvidia-gpu-cluster-policy"
         else ok "ClusterPolicy present"; fi
 
-        cap="$(run get nodes -l node-role.kubernetes.io/gpu -o jsonpath='{.items[*].status.allocatable.nvidia\.com/gpu}')"
+        cap="$(run get nodes -l node-role.kubernetes.io/gpu -o json | python3 -I -c 'import json,sys
+out=[]
+for n in json.load(sys.stdin)["items"]:
+    ready=any(c["type"]=="Ready" and c["status"]=="True" for c in n["status"].get("conditions",[]))
+    g=n["status"].get("allocatable",{}).get("nvidia.com/gpu")
+    if ready and g: out.append(g)
+print(" ".join(out))' 2>/dev/null)"
         if [ -z "$cap" ]; then
-            bad "no node advertises nvidia.com/gpu" "Driver stack has not finished, or never started."
+            bad "no Ready node advertises nvidia.com/gpu" "Driver stack has not finished, or never started."
             info "A GPU node with no driver is Ready and schedulable and reports no GPU."
             info "Check: oc get pods -n nvidia-gpu-operator"
         else ok "nvidia.com/gpu capacity: ${cap}"; fi
@@ -506,17 +541,23 @@ PY
             fi
         fi
 
-        # Open question, not a check (solution 7143483): from 4.21.22 the ingress
-        # operator is said to stop managing the servicemeshoperator3 Subscription.
-        # Recorded here so each new cluster answers it.
+        # The Gateway API's istiod: since solution 7143483 the ingress operator runs it
+        # itself (no Service Mesh Subscription). Its image is not in the release payload,
+        # so a disconnected mirror must carry it (see docs/rhoai-disconnected-additional-images.md).
+        istver="$(run get "$DEPLOY" ingress-operator -n openshift-ingress-operator \
+                  -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="ISTIO_VERSION")].value}')"
+        istimg="$(run get "$DEPLOY" istiod-openshift-gateway -n openshift-ingress -o jsonpath='{.spec.template.spec.containers[0].image}')"
         smsub="$(run get "$SUB" -A -o json | python3 -I -c 'import json,sys
 for s in json.load(sys.stdin)["items"]:
     if s.get("spec",{}).get("name")=="servicemeshoperator3":
-        print("%s/%s installed=%s" % (s["metadata"]["namespace"], s["metadata"]["name"], (s.get("status") or {}).get("installedCSV","-")))' 2>/dev/null | head -1)"
-        gwver="$(run get "$DEPLOY" ingress-operator -n openshift-ingress-operator \
-                 -o jsonpath='{.spec.template.spec.containers[*].env[?(@.name=="GATEWAY_API_OPERATOR_VERSION")].value}')"
-        info "Service Mesh Subscription: ${smsub:-none}; ingress operator GATEWAY_API_OPERATOR_VERSION=${gwver:-unset}"
-        info "  (solution 7143483 question; see docs/rhoai-disconnected-additional-images.md)"
+        print("%s/%s" % (s["metadata"]["namespace"], s["metadata"]["name"]))' 2>/dev/null | head -1)"
+        if [ -n "$istimg" ]; then
+            ok "Gateway API istiod ${istver:-?} (run by the ingress operator)"
+            info "  image ${istimg##*/}"
+        else
+            warn "no istiod-openshift-gateway Deployment" "The Gateway API controller is not running; MaaS gateways cannot be programmed."
+        fi
+        [ -n "$smsub" ] && info "  also a servicemeshoperator3 Subscription: ${smsub}"
 
         if run get crd llminferenceservices.serving.kserve.io >/dev/null; then
             n="$(run get llminferenceservice -A --no-headers | wc -l)"
@@ -533,6 +574,14 @@ for i in json.load(sys.stdin)["items"]:
     if c.get("Ready")!="True": bad.append(i["metadata"]["name"])
 print(" ".join(bad))' 2>/dev/null)"
                 [ -z "$nr" ] && ok "all models Ready" || bad "models not Ready: ${nr}"
+                # Ready is the controller's last word and lags a resume: on 2026-11-19 every
+                # model read Ready while its only pod sat on a NotReady node. Each model also
+                # needs a pod that is Ready now.
+                nopod="$(run get llminferenceservice -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | while read -r mns mname; do
+                    run get pods -n "$mns" --no-headers 2>/dev/null | awk -v m="$mname" '$1 ~ "^"m"-" && $3=="Running" {split($2,a,"/"); if (a[1]==a[2] && a[1]>0) f=1} END {exit !f}' || printf '%s ' "$mname"
+                done)"
+                [ -n "$nopod" ] && bad "no Ready pod for model(s): ${nopod}" \
+                    "The Ready condition above may be stale. Check: oc get pods -o wide in the model namespace"
 
                 # The runtime actually running, against the one the installed
                 # bundle declares. config.openshiftAiModels[].image is pinned by

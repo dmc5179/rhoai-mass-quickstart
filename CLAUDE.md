@@ -85,13 +85,13 @@ that explicitness is load-bearing, not stylistic.
 20-deploy-maas        imperative MaaS (superseded by policies; kept for non-AutoShift use)
 45-autoshift-values   per-cluster values. BEFORE 50 — helm reads values at install time
 50-autoshift          bootstrap | adopt | status | refresh | uninstall
-maas-database.sh      create | status | secret | destroy. AWS RDS PostgreSQL,
+maas-database.sh      create | status | secret | stop | start | destroy. AWS RDS PostgreSQL,
                       which maas-api will not start without. After RHOAI exists.
 maas-user.sh          create | status. The htpasswd user that mints MaaS keys.
 35-smoke-test         a real prompt end to end; mints as maas-user if it exists
 40-lightspeed
 90-destroy-cluster    [--with-vpc]. The VPC survives without the flag.
-cluster-power.sh      park or resume a cluster to stop the bill
+cluster-power.sh      park or resume a cluster (and its MaaS database) to cut the bill
 ```
 
 `adopt` is the irreversible step, not `bootstrap`. It activates every enabled
@@ -125,6 +125,10 @@ by a test:
   `UnsupportedOperatorGroup` while the policy reports only that the CSV was not
   found. Six instances so far.
 - **A GPU node with no driver is Ready and schedulable and reports no GPU.**
+- **The reverse after a resume: a GPU node that never started keeps its last
+  `nvidia.com/gpu` allocatable, and its model's `Ready` condition stays True**
+  while the only pod sits on the NotReady node. `checkup.sh` now counts Ready
+  GPU nodes and requires a Ready model pod.
 
 ## Policy conventions
 

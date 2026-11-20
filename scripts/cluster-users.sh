@@ -278,7 +278,11 @@ done
 push_htpasswd
 
 CONSOLE="$("$OC" whoami --show-console 2>/dev/null || echo "<console URL>")"
-DASHBOARD="$("$OC" get route rhods-dashboard -n redhat-ods-applications -o jsonpath='https://{.spec.host}' 2>/dev/null || true)"
+# RHOAI 3.x serves the dashboard through its gateway at the GatewayConfig's domain
+# (rh-ai.<apps domain>); the old rhods-dashboard Route only redirects there.
+DASHBOARD="$("$OC" get gatewayconfig default-gateway -o jsonpath='https://{.status.domain}' 2>/dev/null || true)"
+[ "$DASHBOARD" = "https://" ] && DASHBOARD=""
+[ -n "$DASHBOARD" ] || DASHBOARD="$("$OC" get route rhods-dashboard -n redhat-ods-applications -o jsonpath='https://{.spec.host}' 2>/dev/null || true)"
 
 # Passwords go to the terminal only. Everything on stdout is tee'd into logs/
 # by lib-logging, so printing them there would leave every password in a log
