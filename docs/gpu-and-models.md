@@ -103,7 +103,7 @@ this needs no configuration on your side.
 
 ### Instance types
 
-`GPU_INSTANCE_TYPE` in `cluster.env`, default `g6.xlarge`.
+`GPU_INSTANCE_TYPE` in `cluster.env`, default `g6.2xlarge`.
 
 | Type | GPU | VRAM |
 |---|---|---|

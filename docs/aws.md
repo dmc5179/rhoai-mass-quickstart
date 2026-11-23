@@ -30,7 +30,7 @@ The settings that matter most:
 | `BASE_DOMAIN` | *(empty)* | empty = auto-detect the single public Route 53 zone |
 | `VPC_CIDR` | `10.0.0.0/16` | never overlap `100.64.0.0/16` |
 | `VPC_AZ` | *(empty)* | empty = first AZ in the region |
-| `GPU_INSTANCE_TYPE` | `g6.xlarge` | L4, 24 GB |
+| `GPU_INSTANCE_TYPE` | `g6.2xlarge` | L4, 24 GB; 8 vCPU, 32 GiB |
 | `MAAS_MODEL` | `auto` | see [gpu-and-models.md](gpu-and-models.md) |
 
 ## 2. Fetch the tooling

@@ -116,7 +116,7 @@ A log with no `RESULT` footer means the run is still going, or was killed.
 | `VPC_INFRA_NAME` | `rhoai` |
 | `VPC_CIDR` | `10.0.0.0/16` |
 | `VPC_AZ` | *(empty — first AZ in region)* |
-| `GPU_INSTANCE_TYPE` | `g6.xlarge` |
+| `GPU_INSTANCE_TYPE` | `g6.2xlarge` |
 
 ### IBM Cloud
 
