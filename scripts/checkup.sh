@@ -815,7 +815,10 @@ if want load; then
     if [ -n "$P" ]; then
         db="$(timeout 90 "$OC" exec -n openshift-etcd "${P#pod/}" -c etcdctl -- \
               etcdctl endpoint status -w json 2>/dev/null \
-              | python3 -I -c 'import json,sys;print(max(e["Status"]["dbSize"] for e in json.load(sys.stdin))//1048576)' 2>/dev/null)"
+              | python3 -I -c 'import json,sys
+d=json.load(sys.stdin)
+print(max(e["Status"]["dbSize"] for e in d)//1048576, max(e["Status"].get("dbSizeInUse",0) for e in d)//1048576)' 2>/dev/null)"
+        read -r db inuse <<< "$db"
         if [ -n "$db" ]; then
             # Compare against what the control plane actually is, not against a
             # fixed string. Reporting the recommendation as though it described
@@ -829,12 +832,19 @@ if want load; then
                    -o jsonpath='{.items[*].status.capacity.cpu}' | tr ' ' '\n' | sort -n | head -1)"
             have="${cpu:-?} vCPU"
             if [ -n "$cpu" ] && [ "$cpu" -ge "$want_cpu" ]; then
-                ok "etcd ${db} MB, control plane ${have} (needs ${want_cpu})"
+                ok "etcd ${db} MB (${inuse} MB in use), control plane ${have} (needs ${want_cpu})"
             elif [ -n "$cpu" ]; then
-                bad "etcd ${db} MB on a ${have} control plane" \
+                bad "etcd ${db} MB (${inuse} MB in use) on a ${have} control plane" \
                     "articles/7132959 suggests ${want_cpu} vCPU at this etcd size. Expect API timeouts, crash-looping ovnkube-controller and NotReady nodes before anything says 'too small'."
             else
-                warn "etcd ${db} MB" "could not read control plane CPU capacity"
+                warn "etcd ${db} MB (${inuse} MB in use)" "could not read control plane CPU capacity"
+            fi
+            # The size includes free pages until the etcd operator defragments (it does so on its
+            # own past about 45% free). A big gap means recent churn: on 2026-11-20 an EnvoyFilter
+            # rewritten every 2 seconds took the database from about 250 MB to 574 MB.
+            if [ -n "$inuse" ] && [ "$inuse" -gt 0 ] && [ $(( (db - inuse) * 100 / db )) -ge 40 ]; then
+                info "$(( (db - inuse) * 100 / db ))% of the etcd database is free space: recent heavy churn. Look for an object"
+                info "rewritten in a loop (oc get events -A --sort-by=.lastTimestamp | tail) before resizing anything."
             fi
         fi
     fi
