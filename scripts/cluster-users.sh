@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# cluster-users.sh - create, update or remove the htpasswd users who log in to
-#                    this cluster, and report their passwords to hand out.
+# cluster-users.sh - create, update or remove the users who log in to this
+#                    cluster, and report their passwords to hand out. htpasswd
+#                    users normally; Keycloak realm users on external OIDC.
 #
-# Usage: scripts/cluster-users.sh apply  <user>... [--admin] [--rotate] [--no-values]
+# Usage: scripts/cluster-users.sh apply  <user>... [--admin] [--group <g>]... [--rotate] [--no-values]
 #        scripts/cluster-users.sh remove <user>... [--no-values]
 #        scripts/cluster-users.sh status
 #
@@ -19,8 +20,23 @@
 #             each can log in.
 #
 #   --admin      Also grant cluster-admin through the cluster-admins Group.
+#   --group <g>  Also add the users to Group <g> (repeatable).
 #   --rotate     Generate new passwords for users who already have one.
 #   --no-values  Leave the AutoShift hub values alone (passwords only).
+#
+# On a cluster with external OIDC (authentications.config type OIDC) there is no
+# OAuth server, no htpasswd and no OpenShift Groups: the users and groups live
+# in the Keycloak realm (scripts/lib-keycloak.sh), and the token's groups claim
+# carries the membership. Then:
+#   apply     creates or updates the realm user (enabled, email verified) and
+#             adds it to maas-users, with --admin also cluster-admins and
+#             rhods-admins, and to each --group; missing groups are created.
+#             Memberships are only ever added. An existing user's password is
+#             left alone unless --rotate; if the one in the file gets no token,
+#             that is reported, not reset.
+#   remove    deletes the realm users.
+#   status    lists the realm users and their groups, and gets each a token.
+#   The htpasswd Secret, the identity provider and the hub values are skipped.
 #
 # Why named users rather than kubeadmin. kubeadmin is a break-glass account:
 # every action shows up as the same person, it is in no Group, so it can't mint
@@ -47,14 +63,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIG_ARGS=("$@")
 
-usage() { sed -n '2,43p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,59p' "${BASH_SOURCE[0]}"; }
 case "${1:-}" in -h|--help|"") usage; exit 0 ;; esac
 ACTION="$1"; shift
 
-ADMIN=0; ROTATE=0; VALUES=1; USERS=()
+ADMIN=0; ROTATE=0; VALUES=1; USERS=(); EXTRA_GROUPS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --admin)     ADMIN=1; shift ;;
+        --group)     EXTRA_GROUPS+=("${2:?--group needs a name}"); shift 2 ;;
         --rotate)    ROTATE=1; shift ;;
         --no-values) VALUES=0; shift ;;
         -h|--help)   usage; exit 0 ;;
@@ -76,10 +93,16 @@ for u in ${USERS[@]+"${USERS[@]}"}; do
         echo "Error: '$u' is not a valid user name (lower-case letters, digits, . _ -)." >&2; exit 2; }
     [ "$u" = "kubeadmin" ] && { echo "Error: kubeadmin is not an htpasswd user." >&2; exit 2; }
 done
+for g in ${EXTRA_GROUPS[@]+"${EXTRA_GROUPS[@]}"}; do
+    [[ "$g" =~ ^[a-z0-9]([a-z0-9._:-]{0,61}[a-z0-9])?$ ]] || {
+        echo "Error: '$g' is not a valid group name." >&2; exit 2; }
+done
 
 . "${ROOT}/cluster.env"
 . "${ROOT}/bin/ocp-env.sh"
 . "${ROOT}/scripts/lib-logging.sh"
+. "${ROOT}/scripts/lib-oc-token.sh"
+. "${ROOT}/scripts/lib-keycloak.sh"
 start_logging "cluster-users" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}
 
 # Must match config.htpasswdUsers in the hub values.
@@ -87,6 +110,7 @@ SECRET_NAME="htpasswd-users"
 PROVIDER_NAME="htpasswd"
 MAAS_GROUP="maas-users"
 ADMIN_GROUP="cluster-admins"
+RHODS_ADMIN_GROUP="rhods-admins"   # OIDC mode only; in htpasswd mode the hub values own it
 PW_FILE="${ROOT}/secrets/cluster-users.env"
 VALUES_FILE="${AUTOSHIFT_DIR:?AUTOSHIFT_DIR must be set in cluster.env}/autoshift/values/clustersets/hub.yaml"
 
@@ -96,6 +120,12 @@ export KUBECONFIG="${CLUSTER_DIR}/auth/kubeconfig"
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 HTFILE="${WORK}/htpasswd"
+
+OIDC=0
+if cluster_is_oidc; then
+    OIDC=1
+    echo "==> Cluster uses external OIDC: users and groups are in Keycloak realm ${KC_REALM} (${KC_NS}/${KC_POD})"
+fi
 
 fetch_htpasswd() {
     : > "$HTFILE"
@@ -124,6 +154,19 @@ pw_del() {
     [ -f "$PW_FILE" ] || return 0
     grep -v "^${1}=" "$PW_FILE" > "${WORK}/pw" || true
     cat "${WORK}/pw" > "$PW_FILE"
+}
+# pw_get, falling back to maas-user.sh's own file for maas-user.
+pw_any() {
+    local pw; pw="$(pw_get "$1")"
+    if [ -z "$pw" ] && [ -f "${ROOT}/secrets/maas-user.env" ]; then
+        pw="$(. "${ROOT}/secrets/maas-user.env"; [ "${MAAS_USER:-}" = "$1" ] && printf '%s' "${MAAS_USER_PASSWORD:-}")" || true
+    fi
+    printf '%s' "$pw"
+}
+gen_password() {
+    python3 -I -c "
+import secrets, string
+print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20)))"
 }
 
 # Group membership in the hub values, through Go yq (see CLAUDE.md).
@@ -174,6 +217,46 @@ values_remove() {   # $1 user
     ' "$EDIT_FILE"
 }
 
+# --- external OIDC: status and remove -----------------------------------------
+if [ "$OIDC" -eq 1 ] && [ "$ACTION" = "status" ]; then
+    echo "==> Skipped: htpasswd Secret and OAuth identity provider (no OAuth server under external OIDC)"
+    echo "==> Users in realm ${KC_REALM} (token = password grant with the password on file):"
+    kc_users_groups > "${WORK}/realm-users"
+    [ -s "${WORK}/realm-users" ] || echo "    none"
+    while IFS=$'\t' read -r u enabled groups; do
+        pw="$(pw_any "$u")"
+        if [ -z "$pw" ]; then
+            token="(password not in ${PW_FILE##*/})"
+        elif [ -n "$(oidc_token "$u" "$pw" 2>/dev/null)" ]; then
+            token="OK"
+        else
+            token="FAIL"
+        fi
+        printf '    %-16s enabled=%-5s groups=%-50s token=%s\n' "$u" "$enabled" "$groups" "$token"
+    done < "${WORK}/realm-users"
+    exit 0
+fi
+if [ "$OIDC" -eq 1 ] && [ "$ACTION" = "remove" ]; then
+    echo "==> Skipped: htpasswd Secret and hub values (no OpenShift users or Groups under external OIDC)"
+    for u in "${USERS[@]}"; do
+        if [ "$(kc_user_delete "$u")" = "deleted" ]; then
+            echo "==> Deleted ${u} from realm ${KC_REALM} (and its group memberships)"
+        else
+            echo "==> ${u} was not in realm ${KC_REALM}"
+        fi
+        pw_del "$u"
+    done
+    cat <<EOF
+
+Removed: ${USERS[*]}
+
+They can no longer get a token. A token already issued stays valid until it
+expires (the realm's access-token lifespan, 5 minutes on the lab realm).
+MaaS API keys they minted are NOT revoked by this. Revoke them by hand.
+EOF
+    exit 0
+fi
+
 # --- status -----------------------------------------------------------------
 if [ "$ACTION" = "status" ]; then
     fetch_htpasswd
@@ -182,11 +265,7 @@ if [ "$ACTION" = "status" ]; then
         for u in $(cut -d: -f1 "$HTFILE"); do
             groups="$("$OC" get groups.user.openshift.io -o json 2>/dev/null \
                 | U="$u" python3 -I -c 'import json,os,sys; print(",".join(g["metadata"]["name"] for g in json.load(sys.stdin)["items"] if os.environ["U"] in (g.get("users") or [])) or "-")')"
-            pw="$(pw_get "$u")"
-            # maas-user is created by maas-user.sh, which keeps its own file.
-            if [ -z "$pw" ] && [ -f "${ROOT}/secrets/maas-user.env" ]; then
-                pw="$(. "${ROOT}/secrets/maas-user.env"; [ "${MAAS_USER:-}" = "$u" ] && printf '%s' "${MAAS_USER_PASSWORD:-}")" || true
-            fi
+            pw="$(pw_any "$u")"
             login="-"
             if [ -n "$pw" ]; then
                 tmp_kc="${WORK}/kc-${u}"
@@ -208,11 +287,12 @@ if [ "$ACTION" = "status" ]; then
     exit 0
 fi
 
-command -v htpasswd >/dev/null || {
-    echo "Error: 'htpasswd' not found. Install httpd-tools (dnf install httpd-tools)." >&2; exit 1; }
-[ "$VALUES" -eq 1 ] && values_check
-
-fetch_htpasswd
+if [ "$OIDC" -eq 0 ]; then
+    command -v htpasswd >/dev/null || {
+        echo "Error: 'htpasswd' not found. Install httpd-tools (dnf install httpd-tools)." >&2; exit 1; }
+    [ "$VALUES" -eq 1 ] && values_check
+    fetch_htpasswd
+fi
 
 # --- remove -----------------------------------------------------------------
 if [ "$ACTION" = "remove" ]; then
@@ -249,6 +329,39 @@ fi
 
 # --- apply ------------------------------------------------------------------
 declare -A NEWPW
+if [ "$OIDC" -eq 1 ]; then
+    echo "==> Skipped: htpasswd Secret and hub values (no OpenShift users or Groups under external OIDC)"
+    WANT_GROUPS="$MAAS_GROUP"
+    [ "$ADMIN" -eq 1 ] && WANT_GROUPS="${WANT_GROUPS} ${ADMIN_GROUP} ${RHODS_ADMIN_GROUP}"
+    for g in ${EXTRA_GROUPS[@]+"${EXTRA_GROUPS[@]}"}; do WANT_GROUPS="${WANT_GROUPS} ${g}"; done
+    for u in "${USERS[@]}"; do
+        pw="$(pw_get "$u")"
+        exists=0; [ -n "$(kc_user_id "$u")" ] && exists=1
+        setpw=""
+        if [ "$exists" -eq 0 ] && [ -n "$pw" ] && [ "$ROTATE" -eq 0 ]; then
+            state="restored"; setpw="$pw"     # rebuilt realm: same password back
+        elif [ "$exists" -eq 0 ]; then
+            state="new"; pw="$(gen_password)"; setpw="$pw"
+        elif [ "$ROTATE" -eq 1 ]; then
+            state="rotated"; pw="$(gen_password)"; setpw="$pw"
+        else
+            state="kept"
+        fi
+        # Recorded first, so a password the realm has is never missing from the file.
+        if [ -n "$setpw" ]; then pw_set "$u" "$pw"; fi
+        # shellcheck disable=SC2086  # WANT_GROUPS is a word list of validated names
+        kc_user_ensure "$u" "$setpw" $WANT_GROUPS >/dev/null
+        if [ "$state" = "kept" ]; then
+            if [ -z "$pw" ]; then
+                state="kept (password not in ${PW_FILE##*/}; realm password unchanged)"
+            elif [ -z "$(oidc_token "$u" "$pw" 2>/dev/null)" ]; then
+                state="PASSWORD MISMATCH: the one in ${PW_FILE##*/} gets no token; realm password left as it is (--rotate to set a new one)"
+            fi
+        fi
+        echo "==> ${u}: realm user ${state}; groups include ${WANT_GROUPS// /, }"
+        NEWPW["$u"]="$state"
+    done
+else
 for u in "${USERS[@]}"; do
     pw="$(pw_get "$u")"
     if [ -n "$pw" ] && [ "$ROTATE" -eq 0 ] && grep -q "^${u}:" "$HTFILE" 2>/dev/null; then
@@ -259,9 +372,7 @@ for u in "${USERS[@]}"; do
         # back rather than inventing a new one people would have to be sent.
         state="restored"
     else
-        pw="$(python3 -I -c "
-import secrets, string
-print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(20)))")"
+        pw="$(gen_password)"
         grep -q "^${u}:" "$HTFILE" 2>/dev/null && state="rotated" || state="new"
     fi
     # -B bcrypt; -i reads the password from stdin so it never shows in ps.
@@ -272,10 +383,12 @@ print(''.join(secrets.choice(string.ascii_letters + string.digits) for _ in rang
     if [ "$VALUES" -eq 1 ]; then
         values_add "$MAAS_GROUP" "$u" ""
         [ "$ADMIN" -eq 1 ] && values_add "$ADMIN_GROUP" "$u" "cluster-admin"
+        for g in ${EXTRA_GROUPS[@]+"${EXTRA_GROUPS[@]}"}; do values_add "$g" "$u" ""; done
     fi
 done
 [ "$VALUES" -eq 1 ] && values_commit
 push_htpasswd
+fi
 
 CONSOLE="$("$OC" whoami --show-console 2>/dev/null || echo "<console URL>")"
 # RHOAI 3.x serves the dashboard through its gateway at the GatewayConfig's domain
@@ -302,12 +415,30 @@ if [ "$tty_ok" -eq 1 ]; then
         echo
         echo "  Passwords (shown on this terminal only, not logged):"
         for u in "${USERS[@]}"; do
-            printf '    %-16s %s\n' "$u" "$(pw_get "$u")"
+            if [ -n "$(pw_get "$u")" ]; then printf '    %-16s %s\n' "$u" "$(pw_get "$u")"; fi
         done
     } > /dev/tty
 else
     echo
     echo "  No terminal, so passwords are not printed. Read them from ${PW_FILE}."
+fi
+if [ "$OIDC" -eq 1 ]; then
+    ISSUER="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].issuer.issuerURL}')"
+    CLI_ID="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].oidcClients[?(@.componentName=="cli")].clientID}')"
+    cat <<EOF
+
+  Console:        ${CONSOLE}   (signs in through Keycloak)
+EOF
+    [ -n "$DASHBOARD" ] && echo "  RHOAI dashboard: ${DASHBOARD}"
+    cat <<EOF
+  CLI:            oc login $("$OC" whoami --show-server) --exec-plugin oc-oidc \\
+                      --issuer-url ${ISSUER} --client-id ${CLI_ID} --callback-port 8080 \\
+                      --certificate-authority <api-ca> --oidc-certificate-authority <ingress-ca>
+
+A new realm user can sign in at once. Group changes reach a session at its next
+token (5 minutes on the lab realm).
+EOF
+    exit 0
 fi
 cat <<EOF
 
@@ -320,6 +451,9 @@ cat <<EOF
 A new login works once the oauth-openshift pods pick up the Secret, usually
 within a minute or two.
 EOF
+if [ ${#EXTRA_GROUPS[@]} -gt 0 ] && [ "$VALUES" -eq 0 ]; then
+    echo; echo "Note: --group has no effect with --no-values (the hub values own the Groups)."
+fi
 if [ "$VALUES" -eq 1 ]; then
     cat <<EOF
 

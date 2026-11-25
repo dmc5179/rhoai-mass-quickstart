@@ -91,7 +91,8 @@ maas-user.sh          create | status. The htpasswd user that mints MaaS keys.
 35-smoke-test         a real prompt end to end; mints as maas-user if it exists
 40-lightspeed
 90-destroy-cluster    [--with-vpc]. The VPC survives without the flag.
-cluster-power.sh      park or resume a cluster (and its MaaS database) to cut the bill
+cluster-power.sh      park or resume a cluster (and its MaaS database) to cut the bill;
+                      start --settle (or settle) gets it working again after a resume
 ```
 
 `adopt` is the irreversible step, not `bootstrap`. It activates every enabled
