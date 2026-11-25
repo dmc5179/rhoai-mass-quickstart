@@ -201,7 +201,10 @@ kas_revision() { discover 0 "$OC" get kubeapiservers.operator.openshift.io clust
 kc_token() {
     local user="$1" kind="$2" pw
     pw="$(env_get "$USERS_ENV" "KC_PW_$(echo "$user" | tr -c 'A-Za-z0-9\n' '_')")"
-    [ -n "$pw" ] || die "no password for ${user} in ${USERS_ENV}"
+    # Since 2026-11-24 realm users share their htpasswd passwords (see secrets/keycloak-users.env).
+    [ -n "$pw" ] || [ ! -f "${ROOT}/secrets/cluster-users.env" ] || pw="$(env_get "${ROOT}/secrets/cluster-users.env" "$user")"
+    [ -n "$pw" ] || { [ "$user" = maas-user ] && pw="$(env_get "${ROOT}/secrets/maas-user.env" MAAS_USER_PASSWORD)"; } || true
+    [ -n "$pw" ] || die "no password for ${user} in ${USERS_ENV}, secrets/cluster-users.env or secrets/maas-user.env"
     curl -sS --cacert "$CA_FILE" --max-time 20 \
         --data-urlencode "grant_type=password" --data-urlencode "client_id=${CLIENT_CLI}" \
         --data-urlencode "username=${user}" --data-urlencode "password=${pw}" \

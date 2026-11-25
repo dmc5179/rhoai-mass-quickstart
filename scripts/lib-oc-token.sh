@@ -12,9 +12,52 @@
 #
 # Requires: OC, CLUSTER_DIR, and KUBECONFIG already set.
 
+# --- External OIDC (OpenShift direct authentication) ----------------------------
+# With authentications.config.openshift.io type OIDC there is no OAuth server, no
+# kubeadmin and no `oc login -u/-p`. oidc_token gets an access token straight from the
+# cluster's own OIDC provider (issuer and the "cli" client read from the cluster), using
+# the password grant, which the provider must allow for that client (our lab realm does).
+cluster_is_oidc() {
+    [ "$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.type}' 2>/dev/null)" = "OIDC" ]
+}
+
+# oidc_token <user> <password>  ->  prints an access token (empty on failure)
+oidc_token() {
+    local iss cid tep
+    iss="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].issuer.issuerURL}')"
+    cid="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].oidcClients[?(@.componentName=="cli")].clientID}')"
+    tep="$(curl -sk "${iss}/.well-known/openid-configuration" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_endpoint",""))')"
+    [ -n "$tep" ] && [ -n "$cid" ] || { echo "Error: could not read the OIDC issuer or cli client from the cluster" >&2; return 1; }
+    curl -sk -X POST "$tep" --data-urlencode grant_type=password --data-urlencode client_id="$cid" \
+        --data-urlencode username="$1" --data-urlencode password="$2" --data-urlencode scope=openid \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))'
+}
+
+# _oidc_kubeconfig <user> <password>: a throwaway kubeconfig with that user's token
+_oidc_kubeconfig() {
+    local server kc tok
+    server="$("$OC" whoami --show-server)"; kc="$(mktemp)"
+    tok="$(oidc_token "$1" "$2")" || { rm -f "$kc"; return 1; }
+    [ -n "$tok" ] || { rm -f "$kc"; echo "Error: the OIDC provider gave no token for $1" >&2; return 1; }
+    KUBECONFIG="$kc" "$OC" login --token="$tok" --server="$server" --insecure-skip-tls-verify=true >/dev/null 2>&1 \
+        || { rm -f "$kc"; echo "Error: the API server rejected the OIDC token for $1" >&2; return 1; }
+    echo "$kc"
+}
+
 ensure_oc_token() {
     if "$OC" whoami -t >/dev/null 2>&1; then
         return 0   # already token-based
+    fi
+
+    if cluster_is_oidc; then
+        # No kubeadmin under external OIDC: use an admin from secrets/cluster-users.env
+        # (OIDC_SCRIPT_USER, default danclark). Tokens are short-lived (5 min on our realm).
+        local u="${OIDC_SCRIPT_USER:-danclark}" p kc
+        p="$( ( set +u; . "${ROOT}/secrets/cluster-users.env"; eval "printf '%s' \"\${$u:-}\"" ) )"
+        kc="$(_oidc_kubeconfig "$u" "$p")" || return 1
+        _OC_TOKEN_KUBECONFIG="$kc"; export KUBECONFIG="$kc"
+        echo "==> Obtained an OIDC token as $("$OC" whoami) (cluster uses external OIDC)"
+        return 0
     fi
 
     local pwfile="${CLUSTER_DIR}/auth/kubeadmin-password"
@@ -72,6 +115,12 @@ maas_mint_token() {
     fi
     # shellcheck disable=SC1090
     . "$env"
+    if cluster_is_oidc; then
+        MAAS_MINT_TOKEN="$(oidc_token "$MAAS_USER" "$MAAS_USER_PASSWORD")"
+        MAAS_MINT_IDENTITY="$MAAS_USER"
+        [ -n "$MAAS_MINT_TOKEN" ] && return 0
+        echo "Error: the OIDC provider gave no token for ${MAAS_USER}" >&2; return 1
+    fi
     local server user_kc
     server="$("$OC" whoami --show-server)"
     user_kc="$(mktemp)"
