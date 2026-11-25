@@ -98,6 +98,30 @@ cluster-power.sh      park or resume a cluster (and its MaaS database) to cut th
 policy at once, and `pruneObjectBehavior: None` means turning a label back off
 stops reconciliation without uninstalling anything.
 
+## The lab signs in through Keycloak (external OIDC), permanently
+
+Since 2026-11-24 the lab cluster (`rhoai`, sandbox141) uses OpenShift direct authentication
+against an in-cluster Keycloak (namespace `keycloak-oidc-test`, realm `rhoai`, 5-minute access
+tokens). There is no switching back. What that changes:
+
+- **No OAuth server.** No htpasswd logins, no `kubeadmin`, and no `user.openshift.io` Users or
+  Groups; group membership comes from the token's `groups` claim. Users and groups live in the
+  realm. People sign in with their old htpasswd passwords (copied into the realm), which stay in
+  `secrets/cluster-users.env` and `secrets/maas-user.env`; `secrets/keycloak-users.env` lists the
+  realm users only.
+- **Scripts:** the installer kubeconfig (client certificate) still works for everything cluster-side.
+  Anything that needs a bearer token goes through `scripts/lib-oc-token.sh`, which gets a Keycloak
+  token when the cluster is OIDC (`OIDC_SCRIPT_USER`, default danclark). Scripts that read
+  OpenShift Users/Groups or create htpasswd users no longer work as written.
+- **`oc` from a laptop** needs the Keycloak route's CA too, which the console's Copy login command
+  leaves out: `oc login <api> --certificate-authority <api-ca> --exec-plugin oc-oidc --issuer-url
+  <issuer> --client-id oc-cli --callback-port 8080 --oidc-certificate-authority <ingress-ca>`.
+- **Broken by design until reconfigured:** anything using an OpenShift OAuth client or
+  oauth-proxy (Dev Spaces login, Open WebUI login). The Web Terminal loses its token after about 5
+  minutes. The `htpasswd-users` label is off.
+- The cutover used the customer files `04`/`05` from `~/workspace/agent-identity-manual`; results
+  and the list of what still needs fixing are in `docs/post-cutover-checks.md` (local).
+
 ## Diagnostics before ad-hoc `oc`
 
 ```bash
