@@ -6,7 +6,7 @@
 # Usage: scripts/checkup.sh [--section <name>] [--quiet]
 #
 # Options:
-#   --section <name>  Run one section only: cluster, autoshift, policies, workloads,
+#   --section <name>  Run one section only: cluster, auth, autoshift, policies, workloads,
 #                     operators, gpu, maas, load
 #   --quiet           Only print problems and the summary
 #
@@ -143,6 +143,22 @@ for c in json.load(sys.stdin)["items"]:
 
 run get --raw /readyz >/dev/null || { echo "Error: cluster API not reachable." >&2; exit 1; }
 
+# GPU parked on purpose (hub values: clusterAutoscaler gpu minReplicas 0, model replicas
+# 0): every GPU MachineSet at 0 replicas and no GPU node. Then a missing GPU node, a
+# model with no pod, and the readiness policies of what runs on the GPU are expected,
+# and are reported as parked instead of as problems.
+GPU_PARKED=0
+gpu_ms_repl="$(run get "machinesets.machine.openshift.io" -n openshift-machine-api -o json | python3 -I -c 'import json,sys
+print(" ".join(str(m["spec"].get("replicas",0)) for m in json.load(sys.stdin)["items"] if "-gpu-" in m["metadata"]["name"]))' 2>/dev/null)"
+if [ -n "$gpu_ms_repl" ] && [ -z "$(tr -d ' 0' <<<"$gpu_ms_repl")" ] \
+   && [ "$(run get nodes -l node-role.kubernetes.io/gpu --no-headers | wc -l)" -eq 0 ]; then
+    GPU_PARKED=1
+fi
+# Readiness policies that cannot pass without a GPU model: the GPU driver stack, and
+# Lightspeed, whose provider is a model served here.
+PARKED_POLICIES="policy-nvidia-gpu-ready policy-ols-ready"
+PARKED_APPS="autoshift-nvidia-gpu-operator autoshift-openshift-lightspeed"
+
 # --- cluster ----------------------------------------------------------------
 if want cluster; then
     head_ "Cluster"
@@ -193,6 +209,105 @@ for p in json.load(sys.stdin)["items"]:
     fi
 fi
 
+# --- authentication -----------------------------------------------------------
+# With external OIDC (Authentication type OIDC) there is no OAuth server: sign-in
+# depends on the identity provider, on every kube-apiserver having rolled out the
+# OIDC config, and on each web front end having been moved off OpenShift OAuth. A
+# front end still behind oauth-proxy keeps running and shows a login page that
+# cannot work, so it is found here by looking, not by waiting for a failure.
+if want auth; then
+    head_ "Authentication"
+    atype="$(run get authentications.config.openshift.io cluster -o jsonpath='{.spec.type}')"
+    if [ "$atype" != "OIDC" ]; then
+        ok "built-in OpenShift OAuth (type ${atype:-IntegratedOAuth})"
+    else
+        iss="$(run get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].issuer.issuerURL}')"
+        ok "external OIDC, issuer ${iss}"
+
+        # A change to the OIDC config (an audience, a claim mapping) is a full
+        # kube-apiserver rollout; until every node has it, sign-in depends on which
+        # API server answers.
+        revs="$(run get kubeapiservers.operator.openshift.io cluster -o json | python3 -I -c 'import json,sys
+s=json.load(sys.stdin)["status"]; l=s.get("latestAvailableRevision")
+c=sorted({n.get("currentRevision") for n in s.get("nodeStatuses",[])})
+print(l, " ".join(map(str,c)))' 2>/dev/null)"
+        read -r rlatest rcur <<<"$revs"
+        if [ -n "$rlatest" ] && [ "$rcur" = "$rlatest" ]; then ok "kube-apiserver on revision ${rlatest} on every node"
+        else warn "kube-apiserver rollout in progress: nodes at ${rcur:-?}, latest ${rlatest:-?}" \
+                  "An OIDC config change applies only once every node has it (about 20 minutes)."; fi
+
+        # The in-cluster Keycloak, when the issuer is one (RHBK operator CR).
+        kc="$(run get keycloaks.k8s.keycloak.org -A -o json 2>/dev/null | python3 -I -c 'import json,sys
+for k in json.load(sys.stdin)["items"]:
+    c={x["type"]:x["status"] for x in (k.get("status") or {}).get("conditions") or []}
+    print(k["metadata"]["namespace"], k["metadata"]["name"], c.get("Ready","?"))' 2>/dev/null | head -1)"
+        if [ -n "$kc" ]; then
+            read -r kcns kcname kcready <<<"$kc"
+            if [ "$kcready" = "True" ]; then ok "Keycloak ${kcns}/${kcname} Ready"
+            else bad "Keycloak ${kcns}/${kcname} not Ready (${kcready})" \
+                     "Nobody can sign in while it is down. The installer kubeconfig (client certificate) still works."; fi
+        fi
+
+        # End to end: a token from the provider, accepted by the API server. Uses the
+        # password grant on the cli client, as lib-oc-token.sh does, for OIDC_SCRIPT_USER.
+        # The token goes to curl on stdin, never on a command line.
+        u="${OIDC_SCRIPT_USER:-danclark}"
+        if [ -f "${ROOT}/secrets/cluster-users.env" ]; then
+            . "${ROOT}/scripts/lib-oc-token.sh"
+            p="$( ( set +u; . "${ROOT}/secrets/cluster-users.env"; eval "printf '%s' \"\${$u:-}\"" ) )"
+            tok="$( [ -n "$p" ] && oidc_token "$u" "$p" 2>/dev/null )"
+            unset p
+            if [ -z "$tok" ]; then
+                bad "no token from ${iss} for ${u}" "Check Keycloak, and that the password in secrets/cluster-users.env matches the realm."
+            else
+                api="$(run whoami --show-server)"
+                who="$(printf 'Authorization: Bearer %s\n' "$tok" | curl -sk --max-time 20 -H @- -H 'Content-Type: application/json' \
+                       -X POST "${api}/apis/authentication.k8s.io/v1/selfsubjectreviews" \
+                       -d '{"apiVersion":"authentication.k8s.io/v1","kind":"SelfSubjectReview"}' \
+                       | python3 -I -c 'import json,sys
+u=json.load(sys.stdin).get("status",{}).get("userInfo",{})
+print(u.get("username",""), len(u.get("groups") or []))' 2>/dev/null)"
+                read -r wname wgroups <<<"$who"
+                if [ -n "$wname" ]; then ok "a token for ${u} is accepted by the API server as ${wname} (${wgroups} groups)"
+                else bad "the API server rejects ${u}'s token" "Audience or claim mapping mismatch, or a kube-apiserver still on an old revision."; fi
+                exp="$(python3 -I -c 'import base64,json,sys
+p=sys.stdin.read().split(".")[1]; p+="="*(-len(p)%4)
+c=json.loads(base64.urlsafe_b64decode(p)); print((c["exp"]-c["iat"])//60)' <<<"$tok" 2>/dev/null)"
+                [ -n "$exp" ] && info "access tokens last ${exp} min; anything holding one without refreshing it (Web Terminal, Dev Spaces kubeconfig) stops working then"
+            fi
+            unset tok
+        else
+            info "no secrets/cluster-users.env, so no end-to-end token check"
+        fi
+
+        # The RHOAI gateway signs dashboard users in itself; it must use the same issuer.
+        gwi="$(run get gatewayconfigs.services.platform.opendatahub.io default-gateway -o jsonpath='{.spec.oidc.issuerURL}')"
+        if run get crd gatewayconfigs.services.platform.opendatahub.io >/dev/null; then
+            if [ "$gwi" = "$iss" ]; then ok "RHOAI dashboard gateway uses the same issuer"
+            else bad "RHOAI dashboard gateway issuer is '${gwi:-unset}', not ${iss}" \
+                     "Set spec.oidc on gatewayconfigs default-gateway (agent-identity-manual 05)."; fi
+        fi
+
+        # Web front ends still signing in through OpenShift OAuth. Dev Spaces keeps its
+        # oauth-proxy but points it at the provider when networking.auth is set.
+        run get "$DEPLOY" -A -o json > "$TMPD/deploy-auth.json"
+        idp="$(run get checlusters.org.eclipse.che -A -o jsonpath='{.items[0].spec.networking.auth.identityProviderURL}')"
+        report <<< "$(IDP="$idp" python3 -I - "$TMPD/deploy-auth.json" <<'PY' 2>/dev/null
+import json, os, sys
+for d in json.load(open(sys.argv[1])).get("items", []):
+    ns, name = d["metadata"]["namespace"], d["metadata"]["name"]
+    for c in d["spec"]["template"]["spec"].get("containers", []):
+        if c["name"] != "oauth-proxy" and "oauth-proxy" not in c.get("image", "").split("/")[-1]:
+            continue
+        if ns == "openshift-devspaces" and os.environ.get("IDP"):
+            print("OK|Dev Spaces signs in through %s" % os.environ["IDP"])
+        else:
+            print("WARN|%s/%s signs in through OpenShift OAuth, which this cluster no longer has|Its login page cannot work until it is moved to the OIDC provider." % (ns, name))
+PY
+)"
+    fi
+fi
+
 # --- autoshift plumbing -----------------------------------------------------
 if want autoshift; then
     head_ "AutoShift"
@@ -210,6 +325,12 @@ if want autoshift; then
     fi
 
     appbad="$(run get "$APP" -n openshift-gitops --no-headers | awk '$2!="Synced"||$3!="Healthy"{print "  "$1" "$2"/"$3}')"
+    if [ "$GPU_PARKED" -eq 1 ] && [ -n "$appbad" ]; then
+        for a in $PARKED_APPS; do
+            grep -q "^  ${a} " <<<"$appbad" && info "${a} Degraded: expected while the GPU is parked"
+            appbad="$(grep -v "^  ${a} " <<<"$appbad")"
+        done
+    fi
     if [ -z "$appbad" ]; then ok "all ArgoCD Applications Synced and Healthy"
     else warn "ArgoCD Applications not Synced/Healthy" "$appbad"
          info "Policies come from Git. An unsynced app means your last push is not live."; fi
@@ -244,6 +365,12 @@ if want policies; then
 
         nc="$(run get policy -n "$mc" --no-headers | awk '$3=="NonCompliant"{print "  "$1}')"
         pend="$(run get policy -n "$mc" --no-headers | awk '$3=="Pending"{print "  "$1}')"
+        if [ "$GPU_PARKED" -eq 1 ] && [ -n "$nc" ]; then
+            for pp in $PARKED_POLICIES; do
+                grep -q "\.${pp}\$" <<<"$nc" && info "${pp} NonCompliant: expected while the GPU is parked"
+                nc="$(grep -v "\.${pp}\$" <<<"$nc")"
+            done
+        fi
         [ -z "$nc" ] && ok "no NonCompliant policies" || bad "NonCompliant policies" "$nc"
         # A template error means the policy rendered nothing. After a values change
         # (a config key renamed, as config.openshiftLightspeed -> config.openshift-lightspeed
@@ -359,7 +486,11 @@ if want gpu; then
         || warn "no GPU MachineSet" "Expected if autoshift.io/gpu-nodes is unset. Run scripts/45-autoshift-values.sh."
 
     gnodes="$(run get nodes -l node-role.kubernetes.io/gpu --no-headers | wc -l)"
-    if [ "${gnodes:-0}" -eq 0 ]; then
+    if [ "$GPU_PARKED" -eq 1 ]; then
+        ok "GPU parked: GPU MachineSet(s) at 0 replicas, no GPU node"
+        info "To bring it back: clusterAutoscaler.machineSets.gpu.minReplicas 1 and the model's replicas 1"
+        info "in the hub values, then scripts/50-autoshift.sh bootstrap"
+    elif [ "${gnodes:-0}" -eq 0 ]; then
         [ "${gms:-0}" -gt 0 ] && bad "GPU MachineSet exists but no GPU node" \
             "$(run get machines.machine.openshift.io -n openshift-machine-api --no-headers | grep -- '-gpu-' | awk '{print "  "$1" "$2}' | head -3)"
     else
@@ -514,6 +645,27 @@ PY
         gw="$(run get gateway -A --no-headers | wc -l)"
         [ "${gw:-0}" -gt 0 ] && ok "${gw} Gateway(s)" || warn "no Gateway — MaaS has no entry point"
 
+        # The Kuadrant Wasm plugin (auth and rate limits) is fetched by each gateway pod
+        # once, over HTTP from the Kuadrant operator, and fails closed. A gateway pod that
+        # starts before the operator (seen after a resume on 2026-11-25) never loads it
+        # and never retries: every request through it gets an empty 503 (wasm_fail_stream),
+        # and nothing else reports a fault. Read from each pod's Envoy stats.
+        wasm_bad=""; wasm_n=0
+        for gp in $(run get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name -o name); do
+            st="$(run exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_fetch_(failures|successes):')"
+            [ -n "$st" ] || continue
+            wasm_n=$((wasm_n + 1))
+            f="$(awk -F': ' '/failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/successes/{print $2}' <<<"$st")"
+            [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ] && wasm_bad="${wasm_bad}  ${gp#pod/} (fetch failures ${f}, successes 0)"$'\n'
+        done
+        if [ -n "$wasm_bad" ]; then
+            bad "gateway pod(s) never loaded the Kuadrant Wasm plugin: every request through them fails with 503" \
+                "${wasm_bad}Fix: oc rollout restart deployments.apps/<gateway deployment> -n openshift-ingress
+                 (usually the gateway started before kuadrant-operator after a resume)"
+        elif [ "$wasm_n" -gt 0 ]; then
+            ok "Kuadrant Wasm plugin loaded on ${wasm_n} gateway pod(s) that use one"
+        fi
+
         # Red Hat solution 7148630. With Connectivity Link 1.4 or later the
         # endpoint picker runs before the model header exists, so requests
         # succeed but skip prefix-cache and load-aware scheduling. The MaaS fix
@@ -577,7 +729,11 @@ print(" ".join(bad))' 2>/dev/null)"
                 # Ready is the controller's last word and lags a resume: on 2026-11-19 every
                 # model read Ready while its only pod sat on a NotReady node. Each model also
                 # needs a pod that is Ready now.
-                nopod="$(run get llminferenceservice -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' | while read -r mns mname; do
+                # A model scaled to 0 replicas (parked) has no pod by design.
+                parked="$(run get llminferenceservice -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.replicas}{"\n"}{end}' | awk '$2=="0"{printf "%s ", $1}')"
+                [ -n "$parked" ] && info "parked (replicas 0): ${parked}"
+                nopod="$(run get llminferenceservice -A -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.replicas}{"\n"}{end}' | while read -r mns mname mrepl; do
+                    [ "$mrepl" = "0" ] && continue
                     run get pods -n "$mns" --no-headers 2>/dev/null | awk -v m="$mname" '$1 ~ "^"m"-" && $3=="Running" {split($2,a,"/"); if (a[1]==a[2] && a[1]>0) f=1} END {exit !f}' || printf '%s ' "$mname"
                 done)"
                 [ -n "$nopod" ] && bad "no Ready pod for model(s): ${nopod}" \
@@ -610,6 +766,8 @@ digest = want.split("@", 1)[1] if "@" in want else None
 pods = [p for f in glob.glob(os.path.join(d, "pods-*.json")) for p in json.load(open(f)).get("items", [])]
 for m in json.load(open(os.path.join(d, "llmisvc.json")))["items"]:
     name, ns = m["metadata"]["name"], m["metadata"]["namespace"]
+    if m.get("spec", {}).get("replicas") == 0:
+        continue
     mine = [p for p in pods if p["metadata"]["namespace"] == ns
             and name in (p["metadata"].get("labels") or {}).values()]
     seen = []
@@ -757,6 +915,8 @@ if want workloads; then
             avail="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].status.availableReplicas}')"
             proxy="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].spec.template.spec.containers[*].name}')"
             [[ " $proxy " == *" oauth-proxy "* ]] && login="OpenShift login" || login="local accounts"
+            [ "$login" = "OpenShift login" ] && [ "$(run get authentications.config.openshift.io cluster -o jsonpath='{.spec.type}')" = "OIDC" ] \
+                && login="OpenShift login, which cannot work under external OIDC; see Authentication"
             [ "${avail:-0}" -ge 1 ] && ok "Open WebUI available at https://${route} (${login})" \
                 || bad "Open WebUI not available" \
                        "In local mode, CreateContainerConfigError means the open-webui-admin Secret is missing."
