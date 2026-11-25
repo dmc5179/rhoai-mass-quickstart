@@ -3,7 +3,13 @@
 # cluster-power.sh - stop or start the cluster's EC2 instances to park it
 #                    without destroying it.
 #
-# Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]
+# Usage: scripts/cluster-power.sh {stop|start|status|settle} [--wait] [--keep-db] [--settle]
+#
+# settle (or start --settle) brings a just-started cluster to a working state: waits for
+# the API, approves the node CSRs that pile up while it was off, waits for the nodes and
+# the Kuadrant operator, then restarts any gateway that never loaded its Kuadrant Wasm
+# plugin. A gateway that starts before the operator fails closed and returns 503 for
+# every MaaS request, with nothing else reporting a fault (seen 2026-11-25).
 #
 # stop and start also stop and start the MaaS RDS database (scripts/maas-database.sh),
 # unless --keep-db. start brings the database up first and waits for it, because
@@ -36,19 +42,88 @@ start_logging "cluster-power" "${BASH_SOURCE[0]}" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]
 ACTION="${1:-}"
 WAIT=0
 KEEP_DB=0
+SETTLE=0
 shift || true
 for a in "$@"; do
     case "$a" in
         --wait)    WAIT=1 ;;
         --keep-db) KEEP_DB=1 ;;
-        *) echo "Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]" >&2; exit 2 ;;
+        --settle)  SETTLE=1; WAIT=1 ;;
+        *) echo "Usage: scripts/cluster-power.sh {stop|start|status|settle} [--wait] [--keep-db] [--settle]" >&2; exit 2 ;;
     esac
 done
 
 case "$ACTION" in
-    stop|start|status) ;;
-    *) echo "Usage: scripts/cluster-power.sh {stop|start|status} [--wait] [--keep-db]" >&2; exit 2 ;;
+    stop|start|status|settle) ;;
+    *) echo "Usage: scripts/cluster-power.sh {stop|start|status|settle} [--wait] [--keep-db] [--settle]" >&2; exit 2 ;;
 esac
+
+# --- settle: from "instances running" to "cluster working" ---------------------
+# Uses the installer kubeconfig (client certificate), which works whatever the
+# cluster's sign-in is.
+settle() {
+    export KUBECONFIG="${CLUSTER_DIR}/auth/kubeconfig"
+    local o=("$OC" --request-timeout=20s) n=1
+    echo "==> Settling: waiting for the API (up to 20 min)"
+    for _ in $(seq 1 80); do "${o[@]}" get --raw /readyz >/dev/null 2>&1 && break; sleep 15; done
+    "${o[@]}" get --raw /readyz >/dev/null 2>&1 || { echo "Error: the API did not come up; rerun: scripts/cluster-power.sh settle" >&2; return 1; }
+    echo "    API is up."
+
+    # Kubelet serving certificates lapse while the cluster is off. CSRs come in two
+    # rounds (client, then serving) as the kubelets reconnect, so keep approving
+    # until every node is Ready.
+    echo "==> Approving pending node CSRs until every node is Ready (up to 20 min)"
+    for _ in $(seq 1 40); do
+        local pend
+        pend="$("${o[@]}" get csr --no-headers 2>/dev/null | awk '$NF=="Pending"{print $1}' || true)"
+        if [ -n "$pend" ]; then
+            # shellcheck disable=SC2086
+            "${o[@]}" adm certificate approve $pend >/dev/null 2>&1 && echo "    approved $(wc -w <<<"$pend") CSR(s)"
+        fi
+        n="$("${o[@]}" get nodes --no-headers 2>/dev/null | grep -cv ' Ready ' || true)"
+        [ "${n:-1}" -eq 0 ] && [ -z "$pend" ] && break
+        sleep 30
+    done
+    "${o[@]}" get nodes --no-headers 2>/dev/null | awk '{print "    "$1" "$2}'
+    [ "${n:-1}" -eq 0 ] || echo "Warning: ${n} node(s) still not Ready. See KCS 7136634." >&2
+
+    # The Kuadrant operator serves the gateways' Wasm plugin over HTTP.
+    local kdep="kuadrant-operator-controller-manager" kns="openshift-operators"
+    if "${o[@]}" get deployments.apps "$kdep" -n "$kns" >/dev/null 2>&1; then
+        echo "==> Waiting for ${kdep} (serves the gateways' Wasm plugin)"
+        "${o[@]}" rollout status deployments.apps/"$kdep" -n "$kns" --timeout=600s >/dev/null 2>&1 \
+            && echo "    Available." || echo "Warning: ${kdep} not Available after 10 min." >&2
+
+        # A gateway pod that failed its one fetch and has never loaded the plugin
+        # (failures > 0, successes 0). Restart its Deployment; healthy ones are left alone.
+        echo "==> Checking each gateway pod loaded the Kuadrant Wasm plugin"
+        local gp st f s dep restarted=""
+        for gp in $("${o[@]}" get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name -o name 2>/dev/null); do
+            st="$("${o[@]}" exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_fetch_(failures|successes):' || true)"
+            [ -n "$st" ] || continue
+            f="$(awk -F': ' '/failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/successes/{print $2}' <<<"$st")"
+            if [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ]; then
+                # pod -> ReplicaSet -> Deployment
+                dep="$("${o[@]}" get "$gp" -n openshift-ingress -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
+                dep="$("${o[@]}" get replicasets.apps "$dep" -n openshift-ingress -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
+                [ -n "$dep" ] || continue
+                case " $restarted " in *" $dep "*) continue ;; esac
+                echo "    ${gp#pod/}: plugin never loaded (fetch failures ${f}); restarting ${dep}"
+                "${o[@]}" rollout restart deployments.apps/"$dep" -n openshift-ingress >/dev/null \
+                    && "${o[@]}" rollout status deployments.apps/"$dep" -n openshift-ingress --timeout=300s >/dev/null 2>&1
+                restarted="$restarted $dep"
+            fi
+        done
+        [ -n "$restarted" ] || echo "    All gateway pods loaded it."
+    fi
+    echo
+    echo "Settled. Full check: scripts/checkup.sh"
+}
+
+if [ "$ACTION" = "settle" ]; then
+    settle
+    exit $?
+fi
 
 [ "$PLATFORM" = "aws" ] || { echo "Error: this script is AWS-only (PLATFORM=${PLATFORM})." >&2; exit 1; }
 command -v jq >/dev/null || { echo "Error: 'jq' is not installed." >&2; exit 1; }
@@ -219,7 +294,7 @@ case "$ACTION" in
         cat <<EOF
 
 Bring it back with:
-    scripts/cluster-power.sh start --wait
+    scripts/cluster-power.sh start --settle
 EOF
         ;;
 
@@ -263,10 +338,15 @@ The cluster runs without them. Workloads that need them (a GPU model, for one) s
 Pending, and while they do the cluster autoscaler may add a replacement machine.
 EOF
         fi
+        if [ "$SETTLE" -eq 1 ]; then
+            settle
+            exit $?
+        fi
         cat <<EOF
 
 Instances are up. The cluster itself takes several more minutes to settle, and
-node IPs change on restart.
+node IPs change on restart. To do the steps below automatically, plus the Kuadrant
+gateway check, run: scripts/cluster-power.sh settle
 
 Nodes often come back NotReady with their CSRs pending, because the kubelet
 serving certificates were not renewed while the cluster was off. Approve them:
