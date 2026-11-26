@@ -248,6 +248,29 @@ for k in json.load(sys.stdin)["items"]:
                      "Nobody can sign in while it is down. The installer kubeconfig (client certificate) still works."; fi
         fi
 
+        # Local backups made by 'scripts/keycloak-oidc.sh keycloak-backup': timestamp
+        # directories under secrets/keycloak-backup/ (realm export plus a database
+        # dump, the 5 newest kept). Read only directory names and mtimes here,
+        # never the backup files.
+        bkdir="${ROOT}/secrets/keycloak-backup"
+        newest=""
+        if [ -d "$bkdir" ]; then
+            newest="$(find "$bkdir" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -1)"
+        fi
+        if [ -z "$newest" ]; then
+            warn "no Keycloak backup" \
+                 "scripts/keycloak-oidc.sh keycloak-backup writes secrets/keycloak-backup/<UTC time>/ with the realm export and a database dump."
+        else
+            read -r newest_ts newest_name <<<"$newest"
+            age_days=$(( ( $(date +%s) - ${newest_ts%%.*} ) / 86400 ))
+            if [ "$age_days" -gt 7 ]; then
+                warn "newest Keycloak backup ${newest_name} is ${age_days} days old" \
+                     "scripts/keycloak-oidc.sh keycloak-backup refreshes it (the 5 newest are kept)."
+            else
+                ok "newest Keycloak backup ${newest_name} is ${age_days} day(s) old"
+            fi
+        fi
+
         # End to end: a token from the provider, accepted by the API server. Uses the
         # password grant on the cli client, as lib-oc-token.sh does, for OIDC_SCRIPT_USER.
         # The token goes to curl on stdin, never on a command line.
