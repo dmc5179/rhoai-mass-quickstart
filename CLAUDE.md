@@ -116,6 +116,9 @@ tokens). There is no switching back. What that changes:
   `maas-user.sh` manage realm users and groups through `scripts/lib-keycloak.sh` (kcadm in `rhbk-0`,
   secrets on stdin); `checkup.sh` has an Authentication section. Anything else that reads OpenShift
   Users/Groups or creates htpasswd users does not work as written.
+- **Break-glass:** the installer's client-certificate context, flattened, is also in
+  `secrets/break-glass/rhoai-admin.kubeconfig` (mode 600). It is the only way in when Keycloak,
+  its database or the router is down; it does not depend on any identity provider.
 - **`oc` from a laptop** needs the Keycloak route's CA too, which the console's Copy login command
   leaves out: `oc login <api> --certificate-authority <api-ca> --exec-plugin oc-oidc --issuer-url
   <issuer> --client-id oc-cli --callback-port 8080 --oidc-certificate-authority <ingress-ca>`. The callback
