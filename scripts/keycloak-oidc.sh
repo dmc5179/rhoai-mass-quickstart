@@ -17,6 +17,12 @@
 #                             scripts/lib-oidc-realm.sh from the secrets/ files and
 #                             the hub values; the default (backup) builds it from
 #                             secrets/keycloak-oidc-backup/, which only this lab has.
+#   keycloak-backup           Export the realm (no client secrets, no user
+#                             credentials) and pg_dump the database into
+#                             secrets/keycloak-backup/<UTC time>/; keeps the last 5.
+#                             Client secrets stay in secrets/keycloak-oidc.env.
+#   keycloak-restore <dir>    Print the manual steps to restore that backup.
+#                             Restore is manual; the command does nothing else.
 #   switch-ocp                authentications.config.openshift.io/cluster -> type OIDC.
 #                             Removes the OAuth server, users, groups, htpasswd logins.
 #   switch-gateway --keep-creds | --regen-creds
@@ -57,7 +63,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIG_ARGS=("$@")
 
-usage() { sed -n '2,49p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,59p' "${BASH_SOURCE[0]}"; }
 
 case "${1:-}" in
     ""|-h|--help) usage; exit 0 ;;
@@ -67,6 +73,7 @@ ACTION="$1"; shift
 DRY_RUN=0
 CREDS_MODE=""
 COOKIE_VALUE=""
+RESTORE_DIR=""
 TEST_USER=""
 WATCH_SESSION=0
 while [ $# -gt 0 ]; do
@@ -80,6 +87,8 @@ while [ $# -gt 0 ]; do
         -*) echo "keycloak-oidc.sh: unknown option '$1'" >&2; exit 2 ;;
         *)  if [ "$ACTION" = "cookie-refresh" ] && [ -z "$COOKIE_VALUE" ]; then
                 COOKIE_VALUE="$1"; shift
+            elif [ "$ACTION" = "keycloak-restore" ] && [ -z "$RESTORE_DIR" ]; then
+                RESTORE_DIR="$1"; shift
             else
                 echo "keycloak-oidc.sh: unexpected argument '$1'" >&2; exit 2
             fi ;;
@@ -87,7 +96,9 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ACTION" in
-    preflight|backup|keycloak-install|switch-ocp|verify|rollback|keycloak-uninstall|status) ;;
+    preflight|backup|keycloak-install|switch-ocp|verify|rollback|keycloak-uninstall|keycloak-backup|status) ;;
+    keycloak-restore)
+        [ -n "$RESTORE_DIR" ] || { echo "keycloak-restore needs the backup directory (printed by keycloak-backup)" >&2; exit 2; } ;;
     switch-gateway)
         [ -n "$CREDS_MODE" ] || { echo "switch-gateway needs --keep-creds or --regen-creds" >&2; exit 2; } ;;
     cookie-refresh)
@@ -115,6 +126,8 @@ export KUBECONFIG
 KC_NS="${KEYCLOAK_NAMESPACE:-keycloak-oidc-test}"
 KC_NAME="${KEYCLOAK_NAME:-rhbk}"
 REALM="${KEYCLOAK_REALM:-rhoai}"
+# The PostgreSQL image, pinned by build tag (:latest was test-only). Override in cluster.env.
+KEYCLOAK_DB_IMAGE="${KEYCLOAK_DB_IMAGE:-registry.redhat.io/rhel9/postgresql-16:1-1795335911}"
 TOKEN_LIFESPAN="${OIDC_TOKEN_LIFESPAN:-300}"                # Keycloak's default, stated explicitly
 CLIENT_CONSOLE="${OIDC_CLIENT_CONSOLE:-openshift-console}"  # confidential, OCP web console
 CLIENT_CLI="${OIDC_CLIENT_CLI:-oc-cli}"                     # public, oc login (and scripted tests)
@@ -409,7 +422,7 @@ EOF
         echo "    rhbk-operator Succeeded"
     fi
 
-    step "PostgreSQL for Keycloak (registry.redhat.io/rhel9/postgresql-16, test only)"
+    step "PostgreSQL for Keycloak (${KEYCLOAK_DB_IMAGE}, test only)"
     local dbpw="<generated>"
     dry || dbpw="$(env_get "$OIDC_ENV" DB_PASSWORD)"
     if dry; then echo "--- [dry-run] would create Secret ${KC_NS}/keycloak-db (username keycloak, password from ${OIDC_ENV})"; else
@@ -437,7 +450,7 @@ spec:
     spec:
       containers:
         - name: postgresql
-          image: registry.redhat.io/rhel9/postgresql-16:latest
+          image: ${KEYCLOAK_DB_IMAGE}
           env:
             - {name: POSTGRESQL_DATABASE, value: keycloak}
             - name: POSTGRESQL_USER
@@ -869,6 +882,83 @@ cmd_keycloak_uninstall() {
     echo "    secrets/keycloak-*.env and ${BACKUP_DIR} are kept; delete them by hand when done"
 }
 
+cmd_keycloak_backup() {
+    require_api
+    # kc_run (scripts/lib-keycloak.sh) defaults KC_NS/KC_POD/KC_REALM/KC_ADMIN_SECRET
+    # from the KEYCLOAK_* names, which cluster.env already provided.
+    # shellcheck source=lib-keycloak.sh
+    . "${ROOT}/scripts/lib-keycloak.sh"
+    local ts dir backup_root
+    backup_root="${ROOT}/secrets/keycloak-backup"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    dir="${backup_root}/${ts}"
+    if dry; then
+        echo "--- [dry-run] would create ${dir} (umask 077) with:"
+        echo "---   realm.json clients.json groups.json users.json"
+        echo "---       (kcadm in ${KC_POD}; clients[].secret and users[].credentials stripped)"
+        echo "---   keycloak-db.sql.gz (pg_dump -U keycloak keycloak from deploy/keycloak-db)"
+        echo "---   then keep the 5 newest directories under secrets/keycloak-backup/"
+        return 0
+    fi
+    [ -s "$OIDC_ENV" ] || die "no ${OIDC_ENV}; run 'keycloak-install' first"
+    mkdir -p "$dir"
+    step "Exporting the realm from ${KC_POD}"
+    kc_run > "${dir}/realm.json" <<'EOF'
+kc get realms/"$R"
+EOF
+    # kcadm does not return secrets or credentials unless asked, but strip them here
+    # so the guarantee is in the file, not in a kcadm version. The client secrets
+    # live in secrets/keycloak-oidc.env, which is never copied into a backup.
+    kc_run <<'EOF' | jq 'del(.[].secret)' > "${dir}/clients.json"
+kc get clients -r "$R"
+EOF
+    kc_run > "${dir}/groups.json" <<'EOF'
+kc get groups -r "$R"
+EOF
+    kc_run <<'EOF' | jq 'del(.[].credentials)' > "${dir}/users.json"
+kc get users -r "$R"
+EOF
+    step "Dumping the database from deploy/keycloak-db"
+    local dbpw
+    dbpw="$(env_get "$OIDC_ENV" DB_PASSWORD)"
+    # The password travels on the exec's stdin, never on a command line.
+    printf '%s\n' "$dbpw" | "$OC" exec -i -n "$KC_NS" deploy/keycloak-db -- \
+        bash -c 'export PGPASSWORD="$(cat)"; exec pg_dump -U keycloak keycloak' \
+        | gzip > "${dir}/keycloak-db.sql.gz"
+    [ -s "${dir}/keycloak-db.sql.gz" ] || die "pg_dump produced an empty dump; the backup is incomplete"
+    echo "    backup in ${dir}:"
+    find "$dir" -type f -printf '      %s bytes  %f\n'
+    step "Keeping the 5 newest backups"
+    find "$backup_root" -mindepth 1 -maxdepth 1 -type d | sort | head -n -5 | while read -r old; do
+        rm -rf "$old"
+        echo "    removed ${old}"
+    done
+}
+
+cmd_keycloak_restore() {
+    # A checklist, not a script: restore touches the live database and realm.
+    cat <<RESTORE
+Restore is manual; this command only prints the steps. Source backup: ${RESTORE_DIR}
+
+1. Database, replacing the current schema (run from this repo, with the installer
+   kubeconfig):
+
+     oc exec -n ${KC_NS} deploy/keycloak-db -- \\
+       psql -U keycloak -d keycloak -c 'drop schema public cascade; create schema public;'
+     zcat ${RESTORE_DIR}/keycloak-db.sql.gz | \\
+       oc exec -i -n ${KC_NS} deploy/keycloak-db -- psql -U keycloak -d keycloak
+
+   If psql asks for a password, it is in Secret ${KC_NS}/keycloak-db (never copy it
+   onto a command line; use PGPASSWORD="\$(oc get secret ...)" in a throwaway shell).
+
+2. Realm: the fast path is 'scripts/keycloak-oidc.sh keycloak-install', which
+   rebuilds the realm from the secrets/ files. Only when that is not enough, apply
+   realm.json, clients.json, groups.json and users.json with kcadm against the
+   running pod (kc_run in scripts/lib-keycloak.sh logs in for you). The client
+   secrets are NOT in the backup; re-set them from ${OIDC_ENV}.
+RESTORE
+}
+
 case "$ACTION" in
     preflight)          cmd_preflight ;;
     backup)             cmd_backup ;;
@@ -879,5 +969,7 @@ case "$ACTION" in
     verify)             cmd_verify ;;
     rollback)           cmd_rollback ;;
     keycloak-uninstall) cmd_keycloak_uninstall ;;
+    keycloak-backup)    cmd_keycloak_backup ;;
+    keycloak-restore)   cmd_keycloak_restore ;;
     status)             cmd_status ;;
 esac
