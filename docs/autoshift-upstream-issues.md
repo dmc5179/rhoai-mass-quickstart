@@ -50,6 +50,22 @@ htpasswd-users and mcp-gateway. The #327 follow-up (worker and infra node polici
 `spec.replicas` once a MachineAutoscaler manages the MachineSet, using the annotation check proved
 live on gpu-nodes on 2026-11-19) waits for #309 and #325.
 
+**2026-11-26 updates.** Opened #366 (mcp-gateway), stacked on #316 because it needs the
+connectivity-link policy; it adds `gateway.authorinoTLS` (default true) for clusters where Authorino
+serves plain gRPC. Review rounds answered with new commits and a plain push:
+
+| PR | Change | Reply |
+|---|---|---|
+| #325 | mismatch check fails only on security groups the worker lacks or a different subnet; `customMessage`; quoted tags; `TestAWSNodePolicies_ExistingMachineSet` | posted |
+| #315 | cert-manager prerequisite in README, example and readiness | posted; readiness rework (LeaderWorkerSetOperator status, `lws-controller-manager`) committed locally, to confirm on a live cluster before pushing |
+| #364 | README rollback order | none needed |
+| #347 | truncated catalog fails; lowest pin by semver; pins stay with their channel | posted |
+| #348 | three Service Mesh discovery fixes; merged #347 (pin scoping changes one fallback expectation) | posted |
+| #327 | unplacement wait, scoped cleanup, GPU and infra examples active; storage MachineSets lose their MachineAutoscaler (`mustnothave`) | drafted |
+
+Merges of `main` into #315, #327 and #366 (one `_example.yaml` conflict each, both blocks kept)
+are committed locally.
+
 **mcp-gateway, before its PR (2026-11-25).** The policy was cherry-picked onto `rhoai-maas` from
 `wip/mcp-gateway-instance` (`dcc83176`, `b7cb50df`) and enabled on the lab (`e217688e`). Its first
 run on a cluster needed three fixes, which the PR must carry:
