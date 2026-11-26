@@ -22,7 +22,13 @@
 #
 # In oidc mode the file turns the htpasswd-users policy off for this cluster and
 # adds the Dev Spaces Keycloak sign-in config (config.dev-spaces), pointing at the
-# realm's issuer. The issuer comes from OIDC_ISSUER when that is set in the
+# realm's issuer. The group bindings htpasswd-users would have created come from
+# the group-rbac policy instead: config.group-rbac.groups is copied from the
+# clusterset values' config.htpasswdUsers.groups with the user lists dropped,
+# because membership now reaches the API server in the identity provider's groups
+# claim. With no htpasswd groups in the values, neither that config nor the
+# group-rbac label is written, so the policy is not enabled against an empty
+# config. The issuer comes from OIDC_ISSUER when that is set in the
 # environment; otherwise from the live cluster's apps domain; otherwise from
 # BASE_DOMAIN in cluster.env as apps.${CLUSTER_NAME}.${BASE_DOMAIN}; with none of
 # those the script fails rather than guess. As a safety net, the script refuses to
@@ -196,16 +202,53 @@ OUT="${VALUES_DIR}/${MC_NAME}.yaml"
 # Labels that follow AUTH_MODE. oauth adds nothing, so the clusterset values decide.
 auth_labels() {
     [ "$AUTH_MODE" = "oidc" ] || return 0
-    printf '%s\n' \
-        "      # AUTH_MODE=oidc: external OIDC sign-in. htpasswd-users creates OpenShift Users" \
-        "      # and Groups, an API that is not served without the OAuth server." \
-        "      htpasswd-users: 'false'"
+    if oidc_has_htpasswd_groups; then
+        printf '%s\n' \
+            "      # AUTH_MODE=oidc: external OIDC sign-in. htpasswd-users creates OpenShift Users" \
+            "      # and Groups, an API that is not served without the OAuth server." \
+            "      htpasswd-users: 'false'" \
+            "      # Its group bindings move to group-rbac: the same groups, bound by name" \
+            "      # from the identity provider's groups claim." \
+            "      group-rbac: 'true'"
+    else
+        printf '%s\n' \
+            "      # AUTH_MODE=oidc: external OIDC sign-in. htpasswd-users creates OpenShift Users" \
+            "      # and Groups, an API that is not served without the OAuth server." \
+            "      htpasswd-users: 'false'"
+    fi
+}
+
+# True when the clusterset values carry config.htpasswdUsers.groups entries, which the
+# group-rbac bindings are built from. Quiet: the caller decides what a missing roster
+# means. strenv hands the cluster set name to yq without touching the expression.
+oidc_has_htpasswd_groups() {
+    local f="${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml"
+    [ -f "$f" ] || return 1
+    [ "$(CLUSTERSET="$CLUSTERSET" yq '.hubClusterSets[strenv(CLUSTERSET)].config.htpasswdUsers.groups | length' "$f" 2>/dev/null)" -gt 0 ] 2>/dev/null
+}
+
+# config.group-rbac.groups: the clusterset values' config.htpasswdUsers.groups with
+# the user lists dropped. Membership reaches the API server in the identity provider's
+# groups claim, so the policy binds the groups by name and needs no users. Nothing on
+# stdout when the values carry no groups: the group-rbac policy fails on an empty
+# config, so it is not enabled either (auth_labels).
+oidc_group_rbac_config() {
+    if ! oidc_has_htpasswd_groups; then
+        echo "Warning: no config.htpasswdUsers.groups in ${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml, so no group-rbac label or config" >&2
+        return 1
+    fi
+    local f="${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml"
+    CLUSTERSET="$CLUSTERSET" yq -o=yaml \
+        '{"group-rbac": {"groups": (.hubClusterSets[strenv(CLUSTERSET)].config.htpasswdUsers.groups | map(del(.users)))}}' \
+        "$f" | sed 's/^/      /'
 }
 
 # Per-cluster config that follows AUTH_MODE. oauth adds nothing, so the clusterset
 # values decide. oidc also points Dev Spaces at the Keycloak realm: its oauth-proxy
 # signs in through the realm's devspaces client, and since its tokens are not
-# refreshed, the cookie lifetime follows the token lifespan.
+# refreshed, the cookie lifetime follows the token lifespan. It also writes
+# config.group-rbac.groups from the clusterset values' htpasswd groups, the bindings
+# htpasswd-users would have created.
 auth_config() {
     [ "$AUTH_MODE" = "oidc" ] || return 0
     cat <<EOF
@@ -226,6 +269,7 @@ auth_config() {
                         - name: 'OAUTH2_PROXY_CODE_CHALLENGE_METHOD'
                           value: 'S256'
 EOF
+    oidc_group_rbac_config || true
 }
 
 render() {
