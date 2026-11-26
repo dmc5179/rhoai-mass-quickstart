@@ -28,8 +28,10 @@ oidc_token() {
     cid="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].oidcClients[?(@.componentName=="cli")].clientID}')"
     tep="$(curl -sk "${iss}/.well-known/openid-configuration" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_endpoint",""))')"
     [ -n "$tep" ] && [ -n "$cid" ] || { echo "Error: could not read the OIDC issuer or cli client from the cluster" >&2; return 1; }
-    curl -sk -X POST "$tep" --data-urlencode grant_type=password --data-urlencode client_id="$cid" \
-        --data-urlencode username="$1" --data-urlencode password="$2" --data-urlencode scope=openid \
+    # The password goes to curl on stdin (password@-), never on a command line where any user
+    # on the host could read it from the process list.
+    printf '%s' "$2" | curl -sk -X POST "$tep" --data-urlencode grant_type=password --data-urlencode client_id="$cid" \
+        --data-urlencode username="$1" --data-urlencode password@- --data-urlencode scope=openid \
         | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))'
 }
 
@@ -39,7 +41,14 @@ _oidc_kubeconfig() {
     server="$("$OC" whoami --show-server)"; kc="$(mktemp)"
     tok="$(oidc_token "$1" "$2")" || { rm -f "$kc"; return 1; }
     [ -n "$tok" ] || { rm -f "$kc"; echo "Error: the OIDC provider gave no token for $1" >&2; return 1; }
-    KUBECONFIG="$kc" "$OC" login --token="$tok" --server="$server" --insecure-skip-tls-verify=true >/dev/null 2>&1 \
+    # Written from the environment rather than `oc login --token=...`, which would put the token
+    # on a command line. The file is created 0600 by mktemp.
+    TOK="$tok" SERVER="$server" python3 -I -c 'import json,os
+print(json.dumps({"apiVersion": "v1", "kind": "Config", "current-context": "oidc",
+  "clusters": [{"name": "c", "cluster": {"server": os.environ["SERVER"], "insecure-skip-tls-verify": True}}],
+  "users": [{"name": "u", "user": {"token": os.environ["TOK"]}}],
+  "contexts": [{"name": "oidc", "context": {"cluster": "c", "user": "u"}}]}))' > "$kc"
+    KUBECONFIG="$kc" "$OC" whoami >/dev/null 2>&1 \
         || { rm -f "$kc"; echo "Error: the API server rejected the OIDC token for $1" >&2; return 1; }
     echo "$kc"
 }
