@@ -123,7 +123,8 @@ tokens). There is no switching back. What that changes:
 - **Broken until reconfigured:** anything using an OpenShift OAuth client or oauth-proxy.
   `checkup.sh` lists them: Open WebUI and ODF's `ux-backend-server` still are. Dev Spaces signs in
   through its own Keycloak client (`devspaces`, `config.dev-spaces.checluster.networking.auth`).
-  The `htpasswd-users` label is off.
+  The `htpasswd-users` label is off. Run phase 45 as `AUTH_MODE=oidc scripts/45-autoshift-values.sh`
+  (`AUTH_MODE` defaults to `oauth`; 45 refuses oauth against a cluster that is already OIDC).
 - **Tokens are not refreshed** by the Web Terminal (WTO-660) or in a Dev Spaces workspace's
   kubeconfig (CRW-14511): `oc` there stops working about 5 minutes after it starts.
 - **Gateways other than MaaS** that use a Kuadrant AuthPolicy need TLS to Authorino, which RHOAI
