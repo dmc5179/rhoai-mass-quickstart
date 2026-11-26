@@ -107,14 +107,14 @@ umask 077
 KUBECONFIG="${CLUSTER_DIR}/auth/kubeconfig"
 export KUBECONFIG
 
-# --- fixed names -------------------------------------------------------------
-KC_NS="keycloak-oidc-test"
-KC_NAME="rhbk"
-REALM="rhoai"
-TOKEN_LIFESPAN=300                          # Keycloak's default, stated explicitly
-CLIENT_CONSOLE="openshift-console"          # confidential, OCP web console
-CLIENT_CLI="oc-cli"                         # public, oc login (and scripted tests)
-CLIENT_GATEWAY="rhoai-gateway"              # confidential, RHOAI kube-auth-proxy
+# --- names (from cluster.env) ------------------------------------------------
+KC_NS="${KEYCLOAK_NAMESPACE:-keycloak-oidc-test}"
+KC_NAME="${KEYCLOAK_NAME:-rhbk}"
+REALM="${KEYCLOAK_REALM:-rhoai}"
+TOKEN_LIFESPAN="${OIDC_TOKEN_LIFESPAN:-300}"                # Keycloak's default, stated explicitly
+CLIENT_CONSOLE="${OIDC_CLIENT_CONSOLE:-openshift-console}"  # confidential, OCP web console
+CLIENT_CLI="${OIDC_CLIENT_CLI:-oc-cli}"                     # public, oc login (and scripted tests)
+CLIENT_GATEWAY="${OIDC_CLIENT_GATEWAY:-rhoai-gateway}"      # confidential, RHOAI kube-auth-proxy
 OIDC_PROVIDER_NAME="keycloak-test"
 CA_CONFIGMAP="keycloak-oidc-ca"             # openshift-config, key ca-bundle.crt
 CONSOLE_SECRET="keycloak-console-client"    # openshift-config, key clientSecret

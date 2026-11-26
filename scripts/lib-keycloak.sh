@@ -27,10 +27,10 @@
 #   kc_user_delete <user>                 delete the user (and so its memberships)
 #   kc_group_delete <group>               delete the group if it exists
 
-KC_NS="${KC_NS:-keycloak-oidc-test}"
-KC_POD="${KC_POD:-rhbk-0}"
-KC_REALM="${KC_REALM:-rhoai}"
-KC_ADMIN_SECRET="${KC_ADMIN_SECRET:-rhbk-initial-admin}"
+KC_NS="${KC_NS:-${KEYCLOAK_NAMESPACE:-keycloak-oidc-test}}"
+KC_POD="${KC_POD:-${KEYCLOAK_NAME:-rhbk}-0}"
+KC_REALM="${KC_REALM:-${KEYCLOAK_REALM:-rhoai}}"
+KC_ADMIN_SECRET="${KC_ADMIN_SECRET:-${KEYCLOAK_ADMIN_SECRET:-rhbk-initial-admin}}"
 
 # kc_run [VAR=value ...] < script
 # Runs the bash script on stdin inside the Keycloak pod, logged in to kcadm. The
