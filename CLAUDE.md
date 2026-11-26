@@ -85,6 +85,7 @@ that explicitness is load-bearing, not stylistic.
 20-deploy-maas        imperative MaaS (superseded by policies; kept for non-AutoShift use)
 45-autoshift-values   per-cluster values. BEFORE 50 — helm reads values at install time
 50-autoshift          bootstrap | adopt | status | refresh | uninstall
+48-external-oidc      the Keycloak realm and the sign-in switch. AUTH_MODE=oidc clusters only
 maas-database.sh      create | status | secret | stop | start | destroy. AWS RDS PostgreSQL,
                       which maas-api will not start without. After RHOAI exists.
 maas-user.sh          create | status. The htpasswd user that mints MaaS keys.
@@ -134,6 +135,17 @@ tokens). There is no switching back. What that changes:
   turns on; the mcp-gateway policy adds its own `<name>-authn-ssl` EnvoyFilter.
 - The cutover used the customer files `04`/`05` from `~/workspace/agent-identity-manual`; results
   and the list of what still needs fixing are in `docs/post-cutover-checks.md` (local).
+
+## AUTH_MODE: building a cluster on Keycloak
+
+`AUTH_MODE` in `cluster.env` is `oauth` (default) or `oidc`, overridden per run. An oidc
+cluster builds 10 -> 45 (`AUTH_MODE=oidc`) -> 50 -> `scripts/48-external-oidc.sh all` ->
+`maas-user.sh` -> 35. Phase 45 writes `htpasswd-users: 'false'`, `group-rbac` with the
+htpasswd groups' roles, and the Dev Spaces Keycloak config, and refuses oauth against a
+cluster that is already on OIDC. Phase 48 builds the realm with `scripts/lib-oidc-realm.sh`
+(offline self-test: `scripts/test-lib-oidc-realm.sh`), then `scripts/keycloak-oidc.sh
+keycloak-backup` snapshots it. The break-glass kubeconfig in `secrets/break-glass/` is the
+only way in while Keycloak is down. 48 is not yet run end to end on a new cluster.
 
 ## Diagnostics before ad-hoc `oc`
 
