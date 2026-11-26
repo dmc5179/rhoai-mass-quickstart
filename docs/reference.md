@@ -12,8 +12,9 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `30-verify-maas.sh` | Six-phase platform verification, via the guide's `verify.sh`. |
 | `35-smoke-test.sh` | Real prompt to your model through the gateway. |
 | `40-lightspeed.sh` | Optional. Install OpenShift Lightspeed pointed at your MaaS model. |
-| `45-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. |
+| `45-autoshift-values.sh` | Render the per-cluster AutoShift values file, including GPU node sizing. Reads `AUTH_MODE` (default `oauth`): `AUTH_MODE=oidc scripts/45-autoshift-values.sh` turns the `htpasswd-users` policy off for the cluster and writes the Dev Spaces Keycloak sign-in config (`config.dev-spaces`), deriving the realm's issuer (override with `OIDC_ISSUER`). Refuses `oauth` mode against a cluster already signed in through OIDC, and warns when the cluster is unreachable so the check could not run. |
 | `50-autoshift.sh` | Optional. Put the cluster under AutoShift (RHACM + GitOps). `refresh` pulls policy changes from Git immediately. |
+| `48-external-oidc.sh` | Switch a fresh cluster to OpenShift direct authentication against an in-cluster Keycloak (`AUTH_MODE=oidc`): `preflight`, `keycloak`, `switch`, `gateway`, `devspaces`, `smoke`, or `all`; `--dry-run` prints the commands. Runs between phase 50 and 35 (AUTH_MODE=oidc only). First pass: not yet run end to end, and the `keycloak` step still builds its realm from `secrets/keycloak-oidc-backup/`, the lab's backup, refusing on a cluster without one; `lib-oidc-realm.sh` is to replace that input. |
 | `90-destroy-cluster.sh` | Tear down; works on partial installs. |
 | `generate-install-config.sh` | Render `install-config.yaml` from the template and the VPC stack's outputs. Called by phase 10. Needs Go yq v4. See [aws-vpc-and-cloudformation.md](aws-vpc-and-cloudformation.md). |
 | `autoshift-feature.sh` | Enable or disable AutoShift capability as whole features, with the label groups and their config requirements enforced. |
@@ -25,9 +26,11 @@ Numbered scripts are phases, run in order. Unnumbered ones are helpers.
 | `maas-database.sh` | Provision the AWS RDS PostgreSQL that MaaS requires, and write the `maas-db-config` Secret. |
 | `maas-user.sh` | Create the user that mints MaaS keys (`create`, `status`). Password in `secrets/maas-user.env`. Normally an htpasswd user plus the Secret the `htpasswd-users` policy waits for. On external OIDC, a Keycloak realm user in `maas-users` (`scripts/lib-keycloak.sh`); `status` gets it a token. An existing realm user's password changes only with `--rotate`. |
 | `rhokp-key.sh` | `apply` creates or updates the RHOKP access key Secret (`rhokp/rhokp-access-key`, key `ACCESS_KEY`) that the `rhokp-mcp` policies wait for, from `RHOKP_KEY` in `secrets/rhokp.env`, without the key appearing in a command line or log; `--restart` makes RHOKP read a changed key (it re-indexes). `status` reports the Secret, both Deployments, the number of documents in the search index, the MCP gateway registration and the policies. |
+| `demo-mcp-cleanup.sh` | Remove what the 2026-11-25 agent-identity MCP demo created: server registrations and routes, the `mcp-gateway` Gateway (and its AWS load balancer) with its attachments, the MCPGatewayExtension and its namespace, the OpenShift MCP server Helm release, and the demo RoleBinding. Dry run by default — it prints the commands and calls no API; `--apply` runs them. With `--apply` it refuses while the `mcp-gateway` policy is still enabled, since ACM would recreate everything; the shared `openshift-default` GatewayClass is left alone. |
 | `cluster-users.sh` | Create, update or remove named logins for the people using the cluster (`apply john paul [--admin] [--group <g>]`, `remove`, `status`). Prints the passwords to send; keeps them in `secrets/cluster-users.env`. Normally htpasswd users, added to `maas-users` (and `cluster-admins` with `--admin`) in the hub values. On external OIDC, Keycloak realm users and groups instead (`--admin` adds `cluster-admins` and `rhods-admins`; memberships only added); `status` gets each user a token, and an existing password changes only with `--rotate`. |
 | `dns-zone-clash-test.sh` | Live test of the Connectivity Link DNSPolicy failure when a public and a private Route 53 zone share a name (`run`, `status`, `teardown`, `--dry-run`). Builds public and private `dnstest.<base>` plus a public `api.dnstest.<base>`, a scoped IAM user (key in `secrets/dns-zone-clash-test.env`), and a test Gateway with a DNSPolicy; passes when the clash listener fails with "multiple zones found for host" and the `api` listener resolves. The zones and user are outside the VPC stack: run `teardown` before `90-destroy-cluster.sh --with-vpc`, and while they exist BASE_DOMAIN auto-detection sees extra public zones. |
 | `keycloak-oidc.sh` | Test harness that switches the cluster from the OpenShift OAuth server to a Keycloak realm (direct OIDC) and back, to reproduce RHOAI gateway behaviour with external OIDC; follow `docs/keycloak-oidc-test-runbook.md`. Subcommands: `preflight`, `backup`, `keycloak-install`, `switch-ocp`, `switch-gateway --keep-creds\|--regen-creds`, `cookie-refresh <duration\|default>`, `verify [--user u] [--watch-session]`, `rollback`, `keycloak-uninstall`, `status`, all with `--dry-run`. **Disruptive:** htpasswd and kubeadmin logins stop while switched; run it with the installer kubeconfig, which is the way back in. Writes `secrets/keycloak-users.env`, `secrets/keycloak-oidc.env` and `secrets/keycloak-oidc-backup/`. The lab has been switched permanently since 2026-11-24 (see CLAUDE.md); `rollback` is no longer part of the plan. |
+| `lib-oidc-realm.sh` | Build a NEW cluster's Keycloak realm as a KeycloakRealmImport, from cluster.env, the `secrets/` files and the hub values rather than `secrets/keycloak-oidc-backup/`: console, `oc-cli`, gateway and Dev Spaces clients with the groups claim and cross-audience mappers, the users from `secrets/cluster-users.env` plus `maas-user`, and the groups and memberships from the hub values. Passwords and client secrets go in as realm-import placeholders backed by a `realm-secrets` Secret, never into the custom resource; missing `secrets/` files are generated in the format `cluster-users.sh` and `maas-user.sh` write. A library, not a phase: nothing calls it yet, `48-external-oidc.sh` will. |
 | `cluster-power.sh` | Stop / start / status, with a cost breakdown. `stop` and `start` also stop and start the MaaS RDS database (`--keep-db` leaves it alone); `start` brings the database up first. Instances start one by one, so an instance EC2 refuses for capacity (often the GPU type) is named while the rest come up. `settle` (or `start --settle`) then waits for the API, approves node CSRs until every node is Ready, and restarts any gateway that never loaded its Kuadrant Wasm plugin (a gateway that starts before kuadrant-operator returns 503 for all MaaS traffic). |
 | `spot-check.sh` | Read-only: spot vs on-demand prices, spot placement scores per zone, the account's spot vCPU quotas, and the hourly cost of the default layout with and without spot workers and GPU. Run it before phase 10 to choose `VPC_AZ` and instance types (`--workers`, `--gpus`, `--dry-run`). |
 | `logs.sh` | List recent runs and whether they passed. |
@@ -108,6 +111,34 @@ A log with no `RESULT` footer means the run is still going, or was killed.
 | `PULL_SECRET_FILE` | `${ROOT}/secrets/pull-secret.json` | |
 | `SSH_KEY_FILE` | `~/.ssh/id_rsa.pub` | |
 
+### External identity (AUTH_MODE)
+
+Set at cluster build time: `oauth` signs people in through the built-in OAuth
+server with htpasswd users, `oidc` through OpenShift direct authentication
+against an in-cluster Keycloak realm (which removes the OAuth server,
+`kubeadmin` and the `user.openshift.io` API; group membership comes from the
+token's `groups` claim).
+
+| Setting | Default | Notes |
+|---|---|---|
+| `AUTH_MODE` | `oauth` | `oauth` or `oidc`. Read by phase 45, which refuses `oauth` against a cluster already on OIDC. |
+| `KEYCLOAK_NAMESPACE` | `keycloak-oidc-test` | namespace of the Keycloak operator, its database and the Keycloak CR |
+| `KEYCLOAK_NAME` | `rhbk` | the Keycloak CR; its pod is `<name>-0` |
+| `KEYCLOAK_REALM` | `rhoai` | the realm holding the clients, users and groups |
+| `KEYCLOAK_ADMIN_SECRET` | `rhbk-initial-admin` | Secret holding the realm admin's credentials |
+| `OIDC_TOKEN_LIFESPAN` | `300` | seconds. Web Terminal and Dev Spaces kubeconfig tokens are not refreshed, so they stop working after this. |
+| `OIDC_CLIENT_CONSOLE` | `openshift-console` | |
+| `OIDC_CLIENT_CLI` | `oc-cli` | public client `oc login` uses, with direct access grants for scripted logins |
+| `OIDC_CLIENT_GATEWAY` | `rhoai-gateway` | the RHOAI gateway's client |
+| `OIDC_CLIENT_DEVSPACES` | `devspaces` | |
+| `OIDC_CLI_CALLBACK_PORTS` | `8080 8090` | localhost ports registered as `oc-cli` redirect URIs; `oc login --callback-port` must be one of them |
+| `OIDC_SCRIPT_USER` | `danclark` | the realm user scripts get bearer tokens as (`lib-oc-token.sh`) |
+
+The issuer URL is derived, not set here:
+`https://keycloak-<KEYCLOAK_NAMESPACE>.<apps domain>/realms/<KEYCLOAK_REALM>`.
+Phase 45 works it out from the live cluster's apps domain, falling back to
+`BASE_DOMAIN`; setting `OIDC_ISSUER` in the environment overrides it.
+
 ### AWS
 
 | Setting | Default |
@@ -157,6 +188,7 @@ password from `secrets/cluster-users.env`), minting as `maas-user` (`secrets/maa
 | `secrets/aws.env` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` |
 | `secrets/ibm.env` | `IC_API_KEY`, `IBMCLOUD_API_KEY` |
 | `secrets/pull-secret.json` | Red Hat pull secret |
+| `secrets/break-glass/rhoai-admin.kubeconfig` | The installer's client-certificate context, flattened, mode 600. The way in when Keycloak, its database or the router is down; it depends on no identity provider. |
 
 All gitignored. Only the `.example` files are committed, listed individually
 in `.gitignore` — do not generalise that to `*.example`, or a real credential
