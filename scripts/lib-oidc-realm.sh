@@ -70,7 +70,7 @@ print(" ".join(users))'
 _oidc_realm_users_env() {
     local f="${ROOT}/secrets/cluster-users.env" tmp pw u
     [ -s "$f" ] && return 0
-    echo "==> Generating ${f} (random passwords, mode 0600)"
+    echo "==> Generating ${f} (random passwords, mode 0600)" >&2
     tmp="$(mktemp)"
     umask 077
     for u in $(_oidc_realm_roster); do
@@ -84,7 +84,7 @@ _oidc_realm_users_env() {
 _oidc_realm_maas_env() {
     local f="${ROOT}/secrets/maas-user.env" pw
     [ -s "$f" ] && return 0
-    echo "==> Generating ${f} (random password, mode 0600)"
+    echo "==> Generating ${f} (random password, mode 0600)" >&2
     pw="$(python3 -I -c 'import secrets; print(secrets.token_urlsafe(24))')"
     umask 077
     cat > "$f" <<EOF

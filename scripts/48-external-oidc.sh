@@ -31,10 +31,9 @@
 # The steps call scripts/keycloak-oidc.sh, the tested harness that switched the lab on
 # 2026-11-24, with the names from cluster.env (KEYCLOAK_*, OIDC_*).
 #
-# FIRST PASS (AUTH_MODE task T3): the keycloak step still builds its realm the way
-# keycloak-oidc.sh does, from secrets/keycloak-oidc-backup/groups.json. A new cluster has no
-# such backup; the realm builder (scripts/lib-oidc-realm.sh, task T2) replaces that input.
-# Until then 'keycloak' refuses on a cluster without the backup. Not yet run end to end (T6).
+# FIRST PASS (AUTH_MODE task T3): the realm now comes from scripts/lib-oidc-realm.sh
+# (REALM_SOURCE=lib), built from cluster.env, the secrets/ files and the hub values, so a new
+# cluster needs no backup. Still not run end to end (T6).
 set -euo pipefail
 
 ORIG_ARGS=("$@")
@@ -100,8 +99,9 @@ do_keycloak() {
         echo "    realm already answers at $(issuer); skipped"
         return 0
     fi
-    # TODO(T2): build the realm with scripts/lib-oidc-realm.sh instead of the lab's backup.
-    "$KC" keycloak-install $DRY
+    # The lab keeps building its realm from the backup when keycloak-oidc.sh is run
+    # directly; a NEW cluster's realm comes from lib-oidc-realm.sh instead.
+    REALM_SOURCE=lib "$KC" keycloak-install $DRY
 }
 
 do_switch() {

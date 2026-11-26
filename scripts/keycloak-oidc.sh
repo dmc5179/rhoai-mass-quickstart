@@ -13,6 +13,10 @@
 #                             names RBAC and MaaS refer to (secrets/keycloak-oidc-backup/).
 #   keycloak-install          Red Hat build of Keycloak operator, a PostgreSQL, a
 #                             Keycloak, and realm "rhoai" (300 s access tokens).
+#                             REALM_SOURCE=lib builds the realm with
+#                             scripts/lib-oidc-realm.sh from the secrets/ files and
+#                             the hub values; the default (backup) builds it from
+#                             secrets/keycloak-oidc-backup/, which only this lab has.
 #   switch-ocp                authentications.config.openshift.io/cluster -> type OIDC.
 #                             Removes the OAuth server, users, groups, htpasswd logins.
 #   switch-gateway --keep-creds | --regen-creds
@@ -319,23 +323,51 @@ PY
 
 cmd_keycloak_install() {
     require_api
-    [ -s "${BACKUP_DIR}/groups.json" ] || dry || die "run 'backup' first; the realm is built from its group list"
+    local realm_source="${REALM_SOURCE:-backup}"
+    case "$realm_source" in backup|lib) ;; *) die "REALM_SOURCE must be backup or lib, got '${realm_source}'" ;; esac
+    if [ "$realm_source" = "backup" ] && [ ! -s "${BACKUP_DIR}/groups.json" ] && ! dry; then
+        die "run 'backup' first; the realm is built from its group list (or set REALM_SOURCE=lib)"
+    fi
+    if [ "$realm_source" = "lib" ]; then
+        # shellcheck source=lib-oidc-realm.sh
+        . "${ROOT}/scripts/lib-oidc-realm.sh"
+    fi
 
     step "Generating secrets (kept if they already exist)"
-    if dry; then echo "--- [dry-run] would create ${OIDC_ENV} and ${USERS_ENV}"; else
+    if dry; then
+        if [ "$realm_source" = "lib" ]; then
+            echo "--- [dry-run] would create ${OIDC_ENV}; the user passwords come from lib-oidc-realm.sh (secrets/cluster-users.env, secrets/maas-user.env)"
+        else
+            echo "--- [dry-run] would create ${OIDC_ENV} and ${USERS_ENV}"
+        fi
+    else
         if [ ! -s "$OIDC_ENV" ]; then
             printf 'CONSOLE_CLIENT_SECRET="%s"\nGATEWAY_CLIENT_SECRET="%s"\nDB_PASSWORD="%s"\n' \
                 "$(gen_secret)" "$(gen_secret)" "$(gen_secret)" > "$OIDC_ENV"
         fi
-        if [ ! -s "$USERS_ENV" ]; then
-            local i=0 u
-            for u in $(jq -r '.users[]' "${BACKUP_DIR}/groups.json"); do
-                printf 'KC_USER_%d="%s"\nKC_PW_%s="%s"\n' "$i" "$u" "$(echo "$u" | tr -c 'A-Za-z0-9\n' '_')" "$(gen_secret)"
-                i=$((i + 1))
-            done > "$USERS_ENV"
+        if [ "$realm_source" = "lib" ]; then
+            # The realm builder also needs the devspaces client secret; add it when
+            # the file predates Dev Spaces joining the realm.
+            if [ -z "$(env_get "$OIDC_ENV" DEVSPACES_CLIENT_SECRET)" ]; then
+                printf 'DEVSPACES_CLIENT_SECRET="%s"\n' "$(gen_secret)" >> "$OIDC_ENV"
+                echo "    added DEVSPACES_CLIENT_SECRET to ${OIDC_ENV}"
+            fi
+        else
+            if [ ! -s "$USERS_ENV" ]; then
+                local i=0 u
+                for u in $(jq -r '.users[]' "${BACKUP_DIR}/groups.json"); do
+                    printf 'KC_USER_%d="%s"\nKC_PW_%s="%s"\n' "$i" "$u" "$(echo "$u" | tr -c 'A-Za-z0-9\n' '_')" "$(gen_secret)"
+                    i=$((i + 1))
+                done > "$USERS_ENV"
+            fi
+            chmod 600 "$USERS_ENV"
         fi
-        chmod 600 "$OIDC_ENV" "$USERS_ENV"
-        echo "    ${OIDC_ENV}, ${USERS_ENV}"
+        chmod 600 "$OIDC_ENV"
+        if [ -s "$USERS_ENV" ]; then
+            echo "    ${OIDC_ENV}, ${USERS_ENV}"
+        else
+            echo "    ${OIDC_ENV}"
+        fi
     fi
 
     step "Namespace and the Red Hat build of Keycloak operator"
@@ -463,10 +495,40 @@ EOF
         echo "    Keycloak Ready at https://${host}"
     fi
 
-    step "Realm ${REALM}: ${TOKEN_LIFESPAN}s access tokens, groups claim, three clients, test users"
+    if [ "$realm_source" = "lib" ]; then
+        step "Realm ${REALM}: ${TOKEN_LIFESPAN}s access tokens, groups claim, four clients, test users (lib-oidc-realm)"
+    else
+        step "Realm ${REALM}: ${TOKEN_LIFESPAN}s access tokens, groups claim, three clients, test users"
+    fi
     # Secret values go in through KeycloakRealmImport placeholders, never into the CR.
-    local chost ghost
+    local chost ghost dhost
     chost="$(console_host)"; ghost="$(gateway_host)"
+    if [ "$realm_source" = "lib" ]; then
+        if dry; then
+            dhost="<devspaces-host>"
+        else
+            dhost="$("$OC" get checlusters.org.eclipse.che -A -o jsonpath='{.items[0].status.cheURL}' 2>/dev/null | sed 's|^https://||')"
+            if [ -z "$dhost" ]; then
+                dhost="devspaces.$(cluster_domain)"
+                echo "    no CheCluster found; using ${dhost}"
+            fi
+        fi
+    fi
+    if [ "$realm_source" = "lib" ]; then
+        if dry; then
+            echo "--- [dry-run] would create Secret ${KC_NS}/realm-secrets from oidc_realm_secret_env (lib-oidc-realm.sh)"
+        else
+            # KEY=VALUE lines in a private temp file; values never reach a command line.
+            local sfile
+            sfile="$(mktemp)"
+            umask 077
+            oidc_realm_secret_env > "$sfile"
+            "$OC" create secret generic realm-secrets -n "$KC_NS" --from-env-file="$sfile" --dry-run=client -o yaml \
+                | "$OC" apply -f - >/dev/null
+            rm -f "$sfile"
+        fi
+        oidc_realm_import "$chost" "$ghost" "$dhost" | apply_yaml "KeycloakRealmImport ${REALM}"
+    else
     if dry; then echo "--- [dry-run] would create Secret ${KC_NS}/realm-secrets from ${OIDC_ENV} and ${USERS_ENV}"; else
         # One file per key in a private directory; values never reach a command line.
         local sdir k; sdir="$(mktemp -d)"
@@ -525,12 +587,21 @@ cr = {"apiVersion": "k8s.keycloak.org/v2alpha1", "kind": "KeycloakRealmImport",
       "spec": {"keycloakCRName": e["KC_NAME"], "realm": realm, "placeholders": placeholders}}
 print(json.dumps(cr, indent=2))
 PY
+    fi
     if ! dry; then
         "$OC" wait keycloakrealmimports.k8s.keycloak.org/"$REALM" -n "$KC_NS" --for=condition=Done --timeout=10m >/dev/null \
             || die "realm import did not finish: oc get keycloakrealmimports.k8s.keycloak.org -n ${KC_NS} -o yaml"
         curl -sS --cacert "$CA_FILE" --max-time 15 -o /dev/null -w '    discovery: HTTP %{http_code}\n' \
             "$(issuer_url)/.well-known/openid-configuration"
-        local u tok; u="$(first_user)"; tok="$(kc_token "$u" access)"
+        local u tok
+        if [ "$realm_source" = "lib" ]; then
+            # The lib-built realm's users are the cluster's own; their passwords
+            # live in secrets/cluster-users.env, which kc_token falls back to.
+            u="${OIDC_SCRIPT_USER}"
+        else
+            u="$(first_user)"
+        fi
+        tok="$(kc_token "$u" access)"
         [ -n "$tok" ] || die "could not get a token for ${u} from the realm"
         python3 -I -c 'import sys,json,base64;p=sys.argv[1].split(".")[1];p+="="*(-len(p)%4);c=json.loads(base64.urlsafe_b64decode(p));print("    token for",c.get("preferred_username"),"groups",c.get("groups"),"aud",c.get("aud"),"lifetime",c["exp"]-c["iat"],"s")' "$tok"
     fi
