@@ -646,20 +646,29 @@ PY
         [ "${gw:-0}" -gt 0 ] && ok "${gw} Gateway(s)" || warn "no Gateway — MaaS has no entry point"
 
         # The Kuadrant Wasm plugin (auth and rate limits) is fetched by each gateway pod
-        # once, over HTTP from the Kuadrant operator, and fails closed. A gateway pod that
-        # starts before the operator (seen after a resume on 2026-11-25) never loads it
-        # and never retries: every request through it gets an empty 503 (wasm_fail_stream),
-        # and nothing else reports a fault. Read from each pod's Envoy stats.
+        # once, over HTTP from the Kuadrant operator, and fails closed. A pod whose fetch
+        # failed (seen after a resume on 2026-11-25) never loads it and never retries:
+        # every request through it gets an empty 503 (wasm_fail_stream), and nothing else
+        # reports a fault. The fetch can also fail only partly: the pod logs
+        # "Plugin configured to fail closed failed to load" and records the failed load
+        # as a cache negative hit while its fetch counters look healthy (also seen
+        # 2026-11-25). Read each pod's Envoy stats and its log.
         wasm_bad=""; wasm_n=0
         for gp in $(run get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name -o name); do
-            st="$(run exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_fetch_(failures|successes):')"
-            [ -n "$st" ] || continue
+            st="$(run exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_(fetch_(failures|successes)|cache_negative_hits):')"
+            lg="$(run logs -n openshift-ingress "${gp#pod/}" 2>/dev/null | grep -F 'Plugin configured to fail closed failed to load')"
+            [ -n "$st" ] || [ -n "$lg" ] || continue
             wasm_n=$((wasm_n + 1))
-            f="$(awk -F': ' '/failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/successes/{print $2}' <<<"$st")"
-            [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ] && wasm_bad="${wasm_bad}  ${gp#pod/} (fetch failures ${f}, successes 0)"$'\n'
+            f="$(awk -F': ' '/fetch_failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/fetch_successes/{print $2}' <<<"$st")"
+            h="$(awk -F': ' '/cache_negative_hits/{print $2}' <<<"$st")"
+            why=""
+            [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ] && why="fetch failures ${f}, successes 0"
+            [ "${h:-0}" -gt 0 ] && why="${why:+$why; }cached load failure(s) ${h}"
+            [ -n "$lg" ] && why="${why:+$why; }log: plugin failed closed"
+            [ -n "$why" ] && wasm_bad="${wasm_bad}  ${gp#pod/} (${why})"$'\n'
         done
         if [ -n "$wasm_bad" ]; then
-            bad "gateway pod(s) never loaded the Kuadrant Wasm plugin: every request through them fails with 503" \
+            bad "gateway pod(s) failed to load the Kuadrant Wasm plugin: every request through them fails with 503" \
                 "${wasm_bad}Fix: oc rollout restart deployments.apps/<gateway deployment> -n openshift-ingress
                  (usually the gateway started before kuadrant-operator after a resume)"
         elif [ "$wasm_n" -gt 0 ]; then

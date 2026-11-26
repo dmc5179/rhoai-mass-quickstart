@@ -7,9 +7,10 @@
 #
 # settle (or start --settle) brings a just-started cluster to a working state: waits for
 # the API, approves the node CSRs that pile up while it was off, waits for the nodes and
-# the Kuadrant operator, then restarts any gateway that never loaded its Kuadrant Wasm
+# the Kuadrant operator, then restarts any gateway that failed to load its Kuadrant Wasm
 # plugin. A gateway that starts before the operator fails closed and returns 503 for
-# every MaaS request, with nothing else reporting a fault (seen 2026-11-25).
+# every MaaS request, with nothing else reporting a fault (seen 2026-11-25); a pod whose
+# fetch only partly failed fails closed the same way.
 #
 # stop and start also stop and start the MaaS RDS database (scripts/maas-database.sh),
 # unless --keep-db. start brings the database up first and waits for it, because
@@ -94,21 +95,30 @@ settle() {
         "${o[@]}" rollout status deployments.apps/"$kdep" -n "$kns" --timeout=600s >/dev/null 2>&1 \
             && echo "    Available." || echo "Warning: ${kdep} not Available after 10 min." >&2
 
-        # A gateway pod that failed its one fetch and has never loaded the plugin
-        # (failures > 0, successes 0). Restart its Deployment; healthy ones are left alone.
+        # A gateway pod that failed to load the plugin fails closed and returns 503 for
+        # every request: the fetch never succeeded (failures > 0, successes 0), or the
+        # cached load failed (cache negative hits > 0), or the pod's log says the
+        # fail-closed plugin failed to load. Restart its Deployment; healthy ones are
+        # left alone.
         echo "==> Checking each gateway pod loaded the Kuadrant Wasm plugin"
-        local gp st f s dep restarted=""
+        local gp st lg f s h why dep restarted=""
         for gp in $("${o[@]}" get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name -o name 2>/dev/null); do
-            st="$("${o[@]}" exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_fetch_(failures|successes):' || true)"
-            [ -n "$st" ] || continue
-            f="$(awk -F': ' '/failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/successes/{print $2}' <<<"$st")"
-            if [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ]; then
+            st="$("${o[@]}" exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_(fetch_(failures|successes)|cache_negative_hits):' || true)"
+            lg="$("${o[@]}" logs -n openshift-ingress "${gp#pod/}" 2>/dev/null | grep -F 'Plugin configured to fail closed failed to load' || true)"
+            [ -n "$st" ] || [ -n "$lg" ] || continue
+            f="$(awk -F': ' '/fetch_failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/fetch_successes/{print $2}' <<<"$st")"
+            h="$(awk -F': ' '/cache_negative_hits/{print $2}' <<<"$st")"
+            why=""
+            [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ] && why="fetch failures ${f}, successes 0"
+            [ "${h:-0}" -gt 0 ] && why="${why:+$why; }cached load failure(s) ${h}"
+            [ -n "$lg" ] && why="${why:+$why; }log: plugin failed closed"
+            if [ -n "$why" ]; then
                 # pod -> ReplicaSet -> Deployment
                 dep="$("${o[@]}" get "$gp" -n openshift-ingress -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
                 dep="$("${o[@]}" get replicasets.apps "$dep" -n openshift-ingress -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
                 [ -n "$dep" ] || continue
                 case " $restarted " in *" $dep "*) continue ;; esac
-                echo "    ${gp#pod/}: plugin never loaded (fetch failures ${f}); restarting ${dep}"
+                echo "    ${gp#pod/}: plugin failed to load (${why}); restarting ${dep}"
                 "${o[@]}" rollout restart deployments.apps/"$dep" -n openshift-ingress >/dev/null \
                     && "${o[@]}" rollout status deployments.apps/"$dep" -n openshift-ingress --timeout=300s >/dev/null 2>&1
                 restarted="$restarted $dep"
