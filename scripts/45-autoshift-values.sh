@@ -26,7 +26,7 @@
 # the group-rbac policy instead: config.group-rbac.groups is copied from the
 # clusterset values' config.htpasswdUsers.groups with the user lists dropped,
 # because membership now reaches the API server in the identity provider's groups
-# claim. With no htpasswd groups in the values, neither that config nor the
+# claim. Groups that bind no roles are left out. With no such groups, neither that config nor the
 # group-rbac label is written, so the policy is not enabled against an empty
 # config. The issuer comes from OIDC_ISSUER when that is set in the
 # environment; otherwise from the live cluster's apps domain; otherwise from
@@ -218,13 +218,20 @@ auth_labels() {
     fi
 }
 
-# True when the clusterset values carry config.htpasswdUsers.groups entries, which the
+# The htpasswd groups that bind at least one role, with their user lists dropped. A group
+# with members but no roles (rhods-admins, read by the RHOAI dashboard from the groups
+# claim) needs no binding, and group-rbac fails on a group with neither clusterRoles nor
+# namespaceRoles, so such groups are left out. strenv hands the cluster set name to yq
+# without touching the expression.
+OIDC_RBAC_GROUPS='.hubClusterSets[strenv(CLUSTERSET)].config.htpasswdUsers.groups // [] | map(del(.users)) | map(select(((.clusterRoles // []) | length) > 0 or ((.namespaceRoles // []) | length) > 0))'
+
+# True when the clusterset values carry htpasswd groups that bind roles, which the
 # group-rbac bindings are built from. Quiet: the caller decides what a missing roster
-# means. strenv hands the cluster set name to yq without touching the expression.
+# means.
 oidc_has_htpasswd_groups() {
     local f="${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml"
     [ -f "$f" ] || return 1
-    [ "$(CLUSTERSET="$CLUSTERSET" yq '.hubClusterSets[strenv(CLUSTERSET)].config.htpasswdUsers.groups | length' "$f" 2>/dev/null)" -gt 0 ] 2>/dev/null
+    [ "$(CLUSTERSET="$CLUSTERSET" yq "${OIDC_RBAC_GROUPS} | length" "$f" 2>/dev/null)" -gt 0 ] 2>/dev/null
 }
 
 # config.group-rbac.groups: the clusterset values' config.htpasswdUsers.groups with
@@ -234,12 +241,12 @@ oidc_has_htpasswd_groups() {
 # config, so it is not enabled either (auth_labels).
 oidc_group_rbac_config() {
     if ! oidc_has_htpasswd_groups; then
-        echo "Warning: no config.htpasswdUsers.groups in ${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml, so no group-rbac label or config" >&2
+        echo "Warning: no config.htpasswdUsers.groups with roles in ${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml, so no group-rbac label or config" >&2
         return 1
     fi
     local f="${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml"
     CLUSTERSET="$CLUSTERSET" yq -o=yaml \
-        '{"group-rbac": {"groups": (.hubClusterSets[strenv(CLUSTERSET)].config.htpasswdUsers.groups | map(del(.users)))}}' \
+        "{\"group-rbac\": {\"groups\": (${OIDC_RBAC_GROUPS})}}" \
         "$f" | sed 's/^/      /'
 }
 
