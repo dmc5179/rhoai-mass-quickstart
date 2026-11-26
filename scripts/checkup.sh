@@ -649,31 +649,34 @@ PY
         # once, over HTTP from the Kuadrant operator, and fails closed. A pod whose fetch
         # failed (seen after a resume on 2026-11-25) never loads it and never retries:
         # every request through it gets an empty 503 (wasm_fail_stream), and nothing else
-        # reports a fault. The fetch can also fail only partly: the pod logs
-        # "Plugin configured to fail closed failed to load" and records the failed load
-        # as a cache negative hit while its fetch counters look healthy (also seen
-        # 2026-11-25). Read each pod's Envoy stats and its log.
-        wasm_bad=""; wasm_n=0
+        # reports a fault. Broken means one of: every fetch failed (stats), or the pod
+        # answered with wasm_fail_stream in the last 15 minutes (its access log).
+        # Not on their own: "Plugin configured to fail closed failed to load" in the log
+        # and wasm.remote_load_cache_negative_hits > 0. Worker threads that start fetching
+        # at the same moment log those, and the fetch then succeeds; healthy pods serving
+        # 200s carried both on 2026-11-25. They are reported as information.
+        wasm_bad=""; wasm_info=""; wasm_n=0
         for gp in $(run get pods -n openshift-ingress -l gateway.networking.k8s.io/gateway-name -o name); do
             st="$(run exec -n openshift-ingress "${gp#pod/}" -- pilot-agent request GET stats 2>/dev/null | grep -E '^wasm\.remote_load_(fetch_(failures|successes)|cache_negative_hits):')"
-            lg="$(run logs -n openshift-ingress "${gp#pod/}" 2>/dev/null | grep -F 'Plugin configured to fail closed failed to load')"
-            [ -n "$st" ] || [ -n "$lg" ] || continue
+            [ -n "$st" ] || continue
             wasm_n=$((wasm_n + 1))
             f="$(awk -F': ' '/fetch_failures/{print $2}' <<<"$st")"; s="$(awk -F': ' '/fetch_successes/{print $2}' <<<"$st")"
             h="$(awk -F': ' '/cache_negative_hits/{print $2}' <<<"$st")"
+            fs="$(run logs -n openshift-ingress "${gp#pod/}" --since=15m 2>/dev/null | grep -c 'wasm_fail_stream')"
             why=""
             [ "${f:-0}" -gt 0 ] && [ "${s:-0}" -eq 0 ] && why="fetch failures ${f}, successes 0"
-            [ "${h:-0}" -gt 0 ] && why="${why:+$why; }cached load failure(s) ${h}"
-            [ -n "$lg" ] && why="${why:+$why; }log: plugin failed closed"
-            [ -n "$why" ] && wasm_bad="${wasm_bad}  ${gp#pod/} (${why})"$'\n'
+            [ "${fs:-0}" -gt 0 ] && why="${why:+$why; }${fs} wasm_fail_stream responses in 15 min"
+            if [ -n "$why" ]; then wasm_bad="${wasm_bad}  ${gp#pod/} (${why})"$'\n'
+            elif [ "${h:-0}" -gt 0 ]; then wasm_info="${wasm_info} ${gp#pod/}"; fi
         done
         if [ -n "$wasm_bad" ]; then
-            bad "gateway pod(s) failed to load the Kuadrant Wasm plugin: every request through them fails with 503" \
+            bad "gateway pod(s) without a working Kuadrant Wasm plugin: requests through them fail with 503" \
                 "${wasm_bad}Fix: oc rollout restart deployments.apps/<gateway deployment> -n openshift-ingress
                  (usually the gateway started before kuadrant-operator after a resume)"
         elif [ "$wasm_n" -gt 0 ]; then
             ok "Kuadrant Wasm plugin loaded on ${wasm_n} gateway pod(s) that use one"
         fi
+        [ -n "$wasm_info" ] && info "startup load race logged, then loaded (no 503s):${wasm_info}"
 
         # Red Hat solution 7148630. With Connectivity Link 1.4 or later the
         # endpoint picker runs before the model header exists, so requests
