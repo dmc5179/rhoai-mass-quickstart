@@ -169,7 +169,9 @@ PASSWORD=""; FROM_FILE=0
 # subshell and compare, so the requested user always wins.
 WANT_USER="$MAAS_USER"
 if [ -f "$ENV_FILE" ] && [ "$ROTATE" -eq 0 ]; then
+    # shellcheck disable=SC1090 # the env file path comes from the caller
     FILE_USER="$(. "$ENV_FILE"; printf '%s' "${MAAS_USER:-}")"
+    # shellcheck disable=SC1090 # the env file path comes from the caller
     FILE_PASS="$(. "$ENV_FILE"; printf '%s' "${MAAS_USER_PASSWORD:-}")"
     if [ "$FILE_USER" = "$WANT_USER" ] && [ -n "$FILE_PASS" ]; then
         PASSWORD="$FILE_PASS"; FROM_FILE=1
