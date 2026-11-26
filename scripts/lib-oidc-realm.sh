@@ -121,7 +121,10 @@ oidc_realm_secret_env() { # KEY=VALUE lines for the realm-secrets Secret
     done < <(sed -n '/^#/d; s/=.*//p' "$uenv" | LC_ALL=C sort)
     v="$(_oidc_realm_env_get "$menv" MAAS_USER_PASSWORD)"
     [ -n "$v" ] || { echo "Error: ${menv} has no MAAS_USER_PASSWORD" >&2; return 1; }
-    printf 'KC_PW_MAAS_USER=%s\n' "$v"
+    # The key must match the realm's placeholder, which is derived from the user name the
+    # same way as above (maas-user -> KC_PW_maas_user).
+    u="$(_oidc_realm_env_get "$menv" MAAS_USER)"; u="${u:-maas-user}"
+    printf 'KC_PW_%s=%s\n' "$(sed 's/[^A-Za-z0-9]/_/g' <<<"$u")" "$v"
 }
 
 oidc_realm_import() { # [console host] [gateway host] [devspaces host] -> prints the CR

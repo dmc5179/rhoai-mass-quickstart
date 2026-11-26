@@ -148,9 +148,8 @@ leaked = [k for k in ("F_CONSOLE", "F_GW", "F_DS", "F_PW_ALICE", "F_PW_BOB", "F_
 check("no fake secret value appears in the rendered CR", not leaked,
       "leaked: " + ", ".join(leaked))
 
-# The CR placeholder for the MaaS password is KC_PW_maas_user (the python key()
-# spelling); the Secret that oidc_realm_secret_env builds names it
-# KC_PW_MAAS_USER. Both sides are asserted as the library spells them today.
+# Placeholder keys are derived from user names (maas-user -> KC_PW_maas_user); the
+# Secret that oidc_realm_secret_env builds must use exactly the same keys.
 expect_ph = {"CONSOLE_CLIENT_SECRET", "GATEWAY_CLIENT_SECRET", "DEVSPACES_CLIENT_SECRET",
              "KC_PW_alice", "KC_PW_bob", "KC_PW_carol", "KC_PW_maas_user"}
 check("placeholders cover the client secrets and every user password",
@@ -179,14 +178,12 @@ if [ "$py_rc" -ne 0 ] && [ "$saw_fail" -eq 0 ]; then
 fi
 
 # --- oidc_realm_secret_env prints the expected key names ---------------------
-# Values are captured and never printed; only the key names are compared. The
-# MaaS password key is hardcoded KC_PW_MAAS_USER here, while the CR builder
-# derives KC_PW_maas_user for the same user; the two spellings are asserted
-# exactly as the library writes them today, and an alignment fix updates both.
+# Values are captured and never printed; only the key names are compared. They must
+# be the CR's placeholder keys, or Keycloak imports users without their passwords.
 sec_out="$(oidc_realm_secret_env 2>/dev/null)" || true
 got_keys="$(sed 's/=.*//' <<<"$sec_out" | LC_ALL=C sort)"
 want_keys="$(printf '%s\n' CONSOLE_CLIENT_SECRET DEVSPACES_CLIENT_SECRET GATEWAY_CLIENT_SECRET \
-    KC_PW_alice KC_PW_bob KC_PW_carol KC_PW_MAAS_USER | LC_ALL=C sort)"
+    KC_PW_alice KC_PW_bob KC_PW_carol KC_PW_maas_user | LC_ALL=C sort)"
 check "oidc_realm_secret_env prints the expected key names" [ "$got_keys" = "$want_keys" ]
 
 # --- missing user env files are generated, mode 600, inside the temp ROOT ----
