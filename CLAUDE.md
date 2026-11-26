@@ -112,15 +112,22 @@ tokens). There is no switching back. What that changes:
   realm users only.
 - **Scripts:** the installer kubeconfig (client certificate) still works for everything cluster-side.
   Anything that needs a bearer token goes through `scripts/lib-oc-token.sh`, which gets a Keycloak
-  token when the cluster is OIDC (`OIDC_SCRIPT_USER`, default danclark). Scripts that read
-  OpenShift Users/Groups or create htpasswd users no longer work as written.
+  token when the cluster is OIDC (`OIDC_SCRIPT_USER`, default danclark). `cluster-users.sh` and
+  `maas-user.sh` manage realm users and groups through `scripts/lib-keycloak.sh` (kcadm in `rhbk-0`,
+  secrets on stdin); `checkup.sh` has an Authentication section. Anything else that reads OpenShift
+  Users/Groups or creates htpasswd users does not work as written.
 - **`oc` from a laptop** needs the Keycloak route's CA too, which the console's Copy login command
   leaves out: `oc login <api> --certificate-authority <api-ca> --exec-plugin oc-oidc --issuer-url
   <issuer> --client-id oc-cli --callback-port 8080 --oidc-certificate-authority <ingress-ca>`. The callback
   port must be a redirect URI on the realm's `oc-cli` client; 8080 and 8090 are registered.
-- **Broken by design until reconfigured:** anything using an OpenShift OAuth client or
-  oauth-proxy (Dev Spaces login, Open WebUI login). The Web Terminal loses its token after about 5
-  minutes. The `htpasswd-users` label is off.
+- **Broken until reconfigured:** anything using an OpenShift OAuth client or oauth-proxy.
+  `checkup.sh` lists them: Open WebUI and ODF's `ux-backend-server` still are. Dev Spaces signs in
+  through its own Keycloak client (`devspaces`, `config.dev-spaces.checluster.networking.auth`).
+  The `htpasswd-users` label is off.
+- **Tokens are not refreshed** by the Web Terminal (WTO-660) or in a Dev Spaces workspace's
+  kubeconfig (CRW-14511): `oc` there stops working about 5 minutes after it starts.
+- **Gateways other than MaaS** that use a Kuadrant AuthPolicy need TLS to Authorino, which RHOAI
+  turns on; the mcp-gateway policy adds its own `<name>-authn-ssl` EnvoyFilter.
 - The cutover used the customer files `04`/`05` from `~/workspace/agent-identity-manual`; results
   and the list of what still needs fixing are in `docs/post-cutover-checks.md` (local).
 
