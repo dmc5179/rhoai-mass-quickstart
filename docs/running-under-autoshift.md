@@ -271,6 +271,22 @@ otherwise.
 Removing a user from `maas-users` does **not** revoke keys they already minted.
 Revoke those by hand.
 
+### On an external OIDC cluster
+
+OpenShift direct authentication serves no `user.openshift.io` API, so `htpasswd-users`
+cannot run there: there are no User or Group objects to create and no HTPasswd identity
+provider to add. The `group-rbac` policy replaces its bindings: it binds the groups named
+in the token's `groups` claim directly, from `config.group-rbac.groups`.
+`scripts/45-autoshift-values.sh` writes that config in `AUTH_MODE=oidc`, copied from the
+clusterset values' htpasswd groups with the user lists dropped, and points Dev Spaces at
+the realm through `config.dev-spaces.checluster.networking.auth` in the same per-cluster
+values.
+
+`pruneObjectBehavior` is `None`, so turning `htpasswd-users` off does not remove what it
+created: the old Group objects and role bindings stay behind. A binding that names a group
+whose name still arrives in the `groups` claim keeps working; the rest dangle until
+deleted by hand.
+
 ## ACM shadows `machine` and `machineset`
 
 Once ACM is installed, the Cluster API CRDs register a second pair of
