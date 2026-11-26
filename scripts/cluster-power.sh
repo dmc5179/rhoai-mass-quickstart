@@ -6,9 +6,10 @@
 # Usage: scripts/cluster-power.sh {stop|start|status|settle} [--wait] [--keep-db] [--settle]
 #
 # settle (or start --settle) brings a just-started cluster to a working state: waits for
-# the API, approves the node CSRs that pile up while it was off, waits for the nodes and
-# the Kuadrant operator, then restarts any gateway that failed to load its Kuadrant Wasm
-# plugin. A gateway that starts before the operator fails closed and returns 503 for
+# the API, approves the node CSRs that pile up while it was off, waits for the nodes,
+# for Keycloak and its database when the cluster signs in through it (warnings only),
+# and the Kuadrant operator, then restarts any gateway that failed to load its Kuadrant
+# Wasm plugin. A gateway that starts before the operator fails closed and returns 503 for
 # every MaaS request, with nothing else reporting a fault (seen 2026-11-25).
 #
 # stop and start also stop and start the MaaS RDS database (scripts/maas-database.sh),
@@ -86,6 +87,21 @@ settle() {
     done
     "${o[@]}" get nodes --no-headers 2>/dev/null | awk '{print "    "$1" "$2}'
     [ "${n:-1}" -eq 0 ] || echo "Warning: ${n} node(s) still not Ready. See KCS 7136634." >&2
+
+    # Sign-in goes through the in-cluster Keycloak (external OIDC). Its database
+    # and its StatefulSet both sit stopped while the cluster is parked, and nothing
+    # signs in until they are back. A cluster still on the built-in OAuth has no
+    # such namespace, and this step then skips silently.
+    if "${o[@]}" get namespace "$KEYCLOAK_NAMESPACE" >/dev/null 2>&1; then
+        echo "==> Waiting for Keycloak in ${KEYCLOAK_NAMESPACE} (database, then the StatefulSet)"
+        if "${o[@]}" rollout status deployments.apps/keycloak-db -n "$KEYCLOAK_NAMESPACE" --timeout=600s >/dev/null 2>&1 \
+            && "${o[@]}" rollout status "statefulsets.apps/${KEYCLOAK_NAME}" -n "$KEYCLOAK_NAMESPACE" --timeout=600s >/dev/null 2>&1; then
+            echo "    Keycloak ready."
+        else
+            echo "Warning: Keycloak did not become ready in time; sign-in is down. Use the installer" >&2
+            echo "    kubeconfig or secrets/break-glass/rhoai-admin.kubeconfig to get in and look at it." >&2
+        fi
+    fi
 
     # The Kuadrant operator serves the gateways' Wasm plugin over HTTP.
     local kdep="kuadrant-operator-controller-manager" kns="openshift-operators"
