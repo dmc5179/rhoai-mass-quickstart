@@ -28,7 +28,9 @@
 # because membership now reaches the API server in the identity provider's groups
 # claim. Groups that bind no roles are left out. With no such groups, neither that config nor the
 # group-rbac label is written, so the policy is not enabled against an empty
-# config. The issuer comes from OIDC_ISSUER when that is set in the
+# config. When the clusterset values already set config.group-rbac.groups, that
+# list is used as is and no copy is written here: a per-cluster list would replace
+# it, entries the htpasswd groups do not have included. The issuer comes from OIDC_ISSUER when that is set in the
 # environment; otherwise from the live cluster's apps domain; otherwise from
 # BASE_DOMAIN in cluster.env as apps.${CLUSTER_NAME}.${BASE_DOMAIN}; with none of
 # those the script fails rather than guess. As a safety net, the script refuses to
@@ -202,7 +204,7 @@ OUT="${VALUES_DIR}/${MC_NAME}.yaml"
 # Labels that follow AUTH_MODE. oauth adds nothing, so the clusterset values decide.
 auth_labels() {
     [ "$AUTH_MODE" = "oidc" ] || return 0
-    if oidc_has_htpasswd_groups; then
+    if clusterset_has_group_rbac || oidc_has_htpasswd_groups; then
         printf '%s\n' \
             "      # AUTH_MODE=oidc: external OIDC sign-in. htpasswd-users creates OpenShift Users" \
             "      # and Groups, an API that is not served without the OAuth server." \
@@ -234,12 +236,23 @@ oidc_has_htpasswd_groups() {
     [ "$(CLUSTERSET="$CLUSTERSET" yq "${OIDC_RBAC_GROUPS} | length" "$f" 2>/dev/null)" -gt 0 ] 2>/dev/null
 }
 
+# True when the clusterset values set config.group-rbac.groups themselves.
+clusterset_has_group_rbac() {
+    local f="${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml"
+    [ -f "$f" ] || return 1
+    [ "$(CLUSTERSET="$CLUSTERSET" yq '.hubClusterSets[strenv(CLUSTERSET)].config."group-rbac".groups // [] | length' "$f" 2>/dev/null)" -gt 0 ] 2>/dev/null
+}
+
 # config.group-rbac.groups: the clusterset values' config.htpasswdUsers.groups with
 # the user lists dropped. Membership reaches the API server in the identity provider's
 # groups claim, so the policy binds the groups by name and needs no users. Nothing on
 # stdout when the values carry no groups: the group-rbac policy fails on an empty
 # config, so it is not enabled either (auth_labels).
 oidc_group_rbac_config() {
+    if clusterset_has_group_rbac; then
+        echo "==> group-rbac: using config.group-rbac.groups from the ${CLUSTERSET} clusterset values" >&2
+        return 1
+    fi
     if ! oidc_has_htpasswd_groups; then
         echo "Warning: no config.htpasswdUsers.groups with roles in ${AUTOSHIFT_DIR}/autoshift/values/clustersets/${CLUSTERSET}.yaml, so no group-rbac label or config" >&2
         return 1
