@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib-logging.sh - tee a script's output to a timestamped log file.
 #
 # Source this, then call start_logging before doing any real work:
