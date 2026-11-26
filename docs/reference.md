@@ -52,6 +52,7 @@ openshell-smoke-test.sh [--dry-run] [--model <id>] [--keep-cli]
 openshell-cli.sh    [--keep] [--stdin] -- <openshell args> | shell | delete | --dry-run
 40-lightspeed.sh    {install|status|uninstall} [--model <id>] [--key-ttl <dur>]
 50-autoshift.sh     {bootstrap|adopt|status|uninstall}
+48-external-oidc.sh {preflight|keycloak|switch|gateway|devspaces|smoke|all} [--dry-run]
 90-destroy-cluster.sh [--with-vpc] [--purge] [--log-level <level>]
 cluster-power.sh    {stop|start|status|settle} [--wait] [--keep-db] [--settle]
 spot-check.sh       [--workers <type,...>] [--gpus <type,...>] [--dry-run]
