@@ -989,7 +989,12 @@ if want workloads; then
             route="$(run get route -n "$owns" -o jsonpath='{.items[0].spec.host}')"
             avail="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].status.availableReplicas}')"
             proxy="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].spec.template.spec.containers[*].name}')"
-            [[ " $proxy " == *" oauth-proxy "* ]] && login="OpenShift login" || login="local accounts"
+            # Three sign-in modes: oauth-proxy in front (OpenShift login), Open WebUI's own OIDC
+            # client (OPENID_PROVIDER_URL set), or its local accounts.
+            oidc="$(run get deploy -n "$owns" -l app.kubernetes.io/name=open-webui -o jsonpath='{.items[0].spec.template.spec.containers[?(@.name=="open-webui")].env[?(@.name=="OPENID_PROVIDER_URL")].value}')"
+            if [[ " $proxy " == *" oauth-proxy "* ]]; then login="OpenShift login"
+            elif [ -n "$oidc" ]; then login="OIDC sign-in through ${oidc%%/.well-known*}"
+            else login="local accounts"; fi
             [ "$login" = "OpenShift login" ] && [ "$(run get authentications.config.openshift.io cluster -o jsonpath='{.spec.type}')" = "OIDC" ] \
                 && login="OpenShift login, which cannot work under external OIDC; see Authentication"
             [ "${avail:-0}" -ge 1 ] && ok "Open WebUI available at https://${route} (${login})" \
