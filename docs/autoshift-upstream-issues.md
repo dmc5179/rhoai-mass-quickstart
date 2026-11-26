@@ -50,6 +50,20 @@ htpasswd-users and mcp-gateway. The #327 follow-up (worker and infra node polici
 `spec.replicas` once a MachineAutoscaler manages the MachineSet, using the annotation check proved
 live on gpu-nodes on 2026-11-19) waits for #309 and #325.
 
+**mcp-gateway, before its PR (2026-11-25).** The policy was cherry-picked onto `rhoai-maas` from
+`wip/mcp-gateway-instance` (`dcc83176`, `b7cb50df`) and enabled on the lab (`e217688e`). Its first
+run on a cluster needed three fixes, which the PR must carry:
+
+| Commit | Fix | Why |
+|---|---|---|
+| `0b3ac91f` | Both listeners plain HTTP on one port; public endpoint through an edge Route | The controller matches a registration to the extension by the listener port its route attaches to. A public 443 listener and server routes on 8080 left every `MCPServerRegistration` NotReady. The install docs mix listener ports without saying so |
+| `4ea23a95` | `EnvoyFilter <name>-authn-ssl`: TLS from the gateway to Authorino | RHOAI turns on TLS for Authorino's gRPC port and patches only the MaaS gateway, so every authenticated request on any other gateway returned 500 (reported in Jira) |
+| `3194709e` | `publicHost` on the `MCPGatewayExtension` | With a hostname-less listener the extension is not Ready, no router EnvoyFilter is written, and every `tools/call` fails at the broker |
+
+The controller bug seen on the way (the router EnvoyFilter kept the old port 443) is filed in Jira.
+The Wasm load race was also seen on a newly created gateway, not only after a resume (reported to the existing Jira issue).
+Still open: the broker lists none of the RHOKP server's tools (`rhokp-mcp` README).
+
 How these PRs are updated: review changes go on top as new signed commits and a plain push, never a
 rebase and force-push. The maintainer merges `main` into PR branches from GitHub, and a force-push
 would discard that.
