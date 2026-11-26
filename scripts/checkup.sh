@@ -236,6 +236,29 @@ print(l, " ".join(map(str,c)))' 2>/dev/null)"
         else warn "kube-apiserver rollout in progress: nodes at ${rcur:-?}, latest ${rlatest:-?}" \
                   "An OIDC config change applies only once every node has it (about 20 minutes)."; fi
 
+        # Every client whose tokens must reach the API server needs an audience on
+        # the issuer: the oidcClients entries (console, cli) and Dev Spaces when it
+        # signs in through the provider. A token with an unaudience'd clientID is
+        # rejected by the API server outright.
+        dsc="$(run get checlusters.org.eclipse.che -A -o jsonpath='{.items[0].spec.networking.auth.oAuthClientName}')"
+        run get authentications.config.openshift.io cluster -o json > "$TMPD/authn-oidc.json"
+        report <<< "$(DSC="$dsc" python3 -I - "$TMPD/authn-oidc.json" <<'PY'
+import json, os, sys
+a = json.load(open(sys.argv[1])).get("spec", {})
+aud = set((((a.get("oidcProviders") or [{}])[0]).get("issuer") or {}).get("audiences") or [])
+req = [c["clientID"] for c in (a.get("oidcClients") or []) if c.get("clientID")]
+if os.environ.get("DSC"):
+    req.append(os.environ["DSC"])
+missing = [c for c in req if c not in aud]
+if not req:
+    print("INFO|no oidcClients and Dev Spaces not on the provider, so no audience check")
+elif missing:
+    print("WARN|OIDC audiences are missing %s|Tokens from those clients are rejected by the API server. Add the client IDs to spec.oidcProviders[0].issuer.audiences on the Authentication CR; that is a kube-apiserver restart (about 20 minutes)." % ", ".join(missing))
+else:
+    print("OK|OIDC audiences cover %s" % ", ".join(req))
+PY
+)"
+
         # The in-cluster Keycloak, when the issuer is one (RHBK operator CR).
         kc="$(run get keycloaks.k8s.keycloak.org -A -o json 2>/dev/null | python3 -I -c 'import json,sys
 for k in json.load(sys.stdin)["items"]:
@@ -309,6 +332,23 @@ c=json.loads(base64.urlsafe_b64decode(p)); print((c["exp"]-c["iat"])//60)' <<<"$
             if [ "$gwi" = "$iss" ]; then ok "RHOAI dashboard gateway uses the same issuer"
             else bad "RHOAI dashboard gateway issuer is '${gwi:-unset}', not ${iss}" \
                      "Set spec.oidc on gatewayconfigs default-gateway (agent-identity-manual 05)."; fi
+            # The dashboard's session cookie must refresh before the access token
+            # expires; a refresh at or past the token lifetime ends the session with
+            # it. Compared only when the end-to-end check above produced a token,
+            # since that is where the lifetime comes from.
+            if [ -n "${exp:-}" ]; then
+                ref="$(run get gatewayconfigs.services.platform.opendatahub.io default-gateway -o jsonpath='{.spec.cookie.refresh}')"
+                refs="$(REF="${ref:-}" python3 -I -c 'import os,re
+s=os.environ["REF"].strip()
+m=re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", s) if s else None
+print(int(m.group(1) or 0)*3600 + int(m.group(2) or 0)*60 + int(m.group(3) or 0) if m and m.group(0) else "")' 2>/dev/null)"
+                if [ -n "$refs" ] && [ "$refs" -lt $((exp * 60)) ]; then
+                    ok "RHOAI dashboard cookie.refresh ${ref} (${refs}s) refreshes inside the ${exp}-minute access tokens"
+                else
+                    warn "RHOAI dashboard cookie.refresh ${ref:-unset, default 1h} is not below the ${exp}-minute access tokens; dashboard sessions end when the token expires" \
+                         "Set spec.cookie.refresh on gatewayconfigs default-gateway to something below the token lifetime, for example 4m."
+                fi
+            fi
         fi
 
         # Web front ends still signing in through OpenShift OAuth. Dev Spaces keeps its
