@@ -10,7 +10,9 @@
 # for Keycloak and its database when the cluster signs in through it (warnings only),
 # and the Kuadrant operator, then restarts any gateway that failed to load its Kuadrant
 # Wasm plugin. A gateway that starts before the operator fails closed and returns 503 for
-# every MaaS request, with nothing else reporting a fault (seen 2026-11-25).
+# every MaaS request, with nothing else reporting a fault (seen 2026-11-25). Last, it
+# restarts the Lightspeed app server once its docs knowledge bridge is ready, because its
+# RAG client gives up for good after three failed attempts at startup.
 #
 # stop and start also stop and start the MaaS RDS database (scripts/maas-database.sh),
 # unless --keep-db. start brings the database up first and waits for it, because
@@ -139,6 +141,23 @@ settle() {
             fi
         done
         [ -n "$restarted" ] || echo "    All gateway pods loaded it."
+    fi
+
+    # Lightspeed's RAG client tries the knowledge bridge (lightspeed-rhokp) three times at
+    # startup and then gives up for the life of the pod, without saying why. After a resume
+    # the app server usually starts first, so restart it once the bridge is ready. Its own
+    # readiness needs the model, which may still be parked: do not wait for it.
+    local lns="openshift-lightspeed"
+    if "${o[@]}" get deployments.apps lightspeed-rhokp -n "$lns" >/dev/null 2>&1 \
+        && "${o[@]}" get deployments.apps lightspeed-app-server -n "$lns" >/dev/null 2>&1; then
+        echo "==> Waiting for lightspeed-rhokp, then restarting lightspeed-app-server (RAG init)"
+        if "${o[@]}" rollout status deployments.apps/lightspeed-rhokp -n "$lns" --timeout=600s >/dev/null 2>&1; then
+            "${o[@]}" rollout restart deployments.apps/lightspeed-app-server -n "$lns" >/dev/null \
+                && echo "    Restarted. It reports Ready only once its model answers." \
+                || echo "Warning: could not restart lightspeed-app-server." >&2
+        else
+            echo "Warning: lightspeed-rhokp not ready after 10 min; Lightspeed answers without Red Hat docs." >&2
+        fi
     fi
     echo
     echo "Settled. Full check: scripts/checkup.sh"
