@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # lib-oc-token.sh - make sure $KUBECONFIG has a bearer token.
 #
 # The MaaS API authenticates callers with an OpenShift bearer token, so
