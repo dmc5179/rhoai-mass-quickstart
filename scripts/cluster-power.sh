@@ -5,11 +5,15 @@
 #
 # Usage: scripts/cluster-power.sh {stop|start|status|settle} [--wait] [--keep-db] [--settle]
 #
-# settle (or start --settle) brings a just-started cluster to a working state: waits for
-# the API, approves the node CSRs that pile up while it was off, waits for the nodes,
-# for Keycloak and its database when the cluster signs in through it (warnings only),
-# and the Kuadrant operator, then restarts any gateway that failed to load its Kuadrant
-# Wasm plugin. A gateway that starts before the operator fails closed and returns 503 for
+# settle (or start --settle) brings a just-started cluster to a working state: waits up
+# to 40 min for the API, approves the node CSRs that pile up while it was off, waits for
+# the nodes, then deletes any pod that came back in phase Failed with reason
+# UnexpectedAdmissionError (after a resume the kubelet re-admits the GPU model pod before
+# the GPU device plugin is ready; its Deployment does not remove a Failed pod, and
+# checkup would then count the model wrongly). It waits for Keycloak and its database
+# when the cluster signs in through it (warnings only), and for the Kuadrant operator,
+# then restarts any gateway that failed to load its Kuadrant Wasm plugin. A gateway that
+# starts before the operator fails closed and returns 503 for
 # every MaaS request, with nothing else reporting a fault (seen 2026-11-25). Last, it
 # restarts the Lightspeed app server once its docs knowledge bridge is ready, because its
 # RAG client gives up for good after three failed attempts at startup.
@@ -67,9 +71,10 @@ esac
 settle() {
     export KUBECONFIG="${CLUSTER_DIR}/auth/kubeconfig"
     local o=("$OC" --request-timeout=20s) n=1
-    echo "==> Settling: waiting for the API (up to 20 min)"
-    for _ in $(seq 1 80); do "${o[@]}" get --raw /readyz >/dev/null 2>&1 && break; sleep 15; done
-    "${o[@]}" get --raw /readyz >/dev/null 2>&1 || { echo "Error: the API did not come up; rerun: scripts/cluster-power.sh settle" >&2; return 1; }
+    echo "==> Settling: waiting for the API (up to 40 min)"
+    # 160 probes x 15 s = 40 min.
+    for _ in $(seq 1 160); do "${o[@]}" get --raw /readyz >/dev/null 2>&1 && break; sleep 15; done
+    "${o[@]}" get --raw /readyz >/dev/null 2>&1 || { echo "Error: the API did not come up after 40 min; rerun: scripts/cluster-power.sh settle" >&2; return 1; }
     echo "    API is up."
 
     # Kubelet serving certificates lapse while the cluster is off. CSRs come in two
@@ -89,6 +94,37 @@ settle() {
     done
     "${o[@]}" get nodes --no-headers 2>/dev/null | awk '{print "    "$1" "$2}'
     [ "${n:-1}" -eq 0 ] || echo "Warning: ${n} node(s) still not Ready. See KCS 7136634." >&2
+
+    # After a resume the kubelet can re-admit a pod before its device plugin is ready,
+    # which leaves the pod in phase Failed with reason UnexpectedAdmissionError next to
+    # its healthy replacement. The GPU model pod came back this way on the last three
+    # starts; its Deployment does not remove a Failed pod, and checkup then counts the
+    # model wrongly. Delete exactly those pods, in any namespace, and nothing else.
+    echo "==> Removing pods left in UnexpectedAdmissionError"
+    local bad dead
+    bad="$("${o[@]}" get pods -A -o json 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    items = json.load(sys.stdin).get("items") or []
+except Exception:
+    items = []
+for p in items:
+    st = p.get("status") or {}
+    md = p.get("metadata") or {}
+    if st.get("phase") == "Failed" and st.get("reason") == "UnexpectedAdmissionError":
+        print(md.get("namespace", "") + "/" + md.get("name", ""))' || true)"
+    if [ -n "$bad" ]; then
+        while IFS= read -r dead; do
+            [ -n "$dead" ] || continue
+            if "${o[@]}" delete pod -n "${dead%%/*}" "${dead#*/}" --wait=false >/dev/null 2>&1; then
+                echo "    deleted $dead (phase Failed, reason UnexpectedAdmissionError)"
+            else
+                echo "    Warning: could not delete $dead." >&2
+            fi
+        done <<<"$bad"
+    else
+        echo "    None."
+    fi
 
     # Sign-in goes through the in-cluster Keycloak (external OIDC). Its database
     # and its StatefulSet both sit stopped while the cluster is parked, and nothing
