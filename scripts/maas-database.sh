@@ -9,6 +9,17 @@
 #        scripts/maas-database.sh stop  [--wait]    # stop the instance to save cost
 #        scripts/maas-database.sh start [--wait]    # start it again
 #        scripts/maas-database.sh destroy [--yes]
+#        scripts/maas-database.sh tag               # add the tracking tags to existing resources
+#
+# Tags. Everything create makes (the RDS instance, the second subnet, the
+# security group and the DB subnet group) carries Name plus three tracking tags:
+# cluster=<CLUSTER_NAME>, purpose=rhoai-maas and openshift-infra-id=<infra ID
+# from clusters/<name>/metadata.json>. `tag` adds the same tags to resources made
+# before they existed; it only adds tags and never deletes anything. The
+# cluster's own kubernetes.io/cluster/<infra-id>: owned tag is deliberately NOT
+# used: openshift-install destroy cluster deletes whatever carries it, cannot
+# delete RDS (it reports "unrecognized ARN service"), and cannot delete the
+# subnet or security group while the database still uses them.
 #
 # stop/start: a stopped RDS instance bills only for its storage. AWS starts a
 # stopped instance again on its own after 7 days. scripts/cluster-power.sh calls
@@ -51,7 +62,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIG_ARGS=("$@")
 
 case "${1:-}" in
-    -h|--help) sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,57p' "${BASH_SOURCE[0]}"; exit 0 ;;
 esac
 ACTION="${1:-}"; shift || true
 
@@ -78,14 +89,14 @@ while [ $# -gt 0 ]; do
         --no-secret)      MAKE_SECRET=0; shift ;;
         --yes|-y)         ASSUME_YES=1; shift ;;
         --wait)           WAIT=1; shift ;;
-        -h|--help)        sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)        sed -n '2,57p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "maas-database.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
 
 case "$ACTION" in
-    create|status|destroy|secret|stop|start) ;;
-    *) echo "Usage: scripts/maas-database.sh {create|status|secret|stop|start|destroy} [options]" >&2; exit 2 ;;
+    create|status|destroy|secret|stop|start|tag) ;;
+    *) echo "Usage: scripts/maas-database.sh {create|status|secret|stop|start|destroy|tag} [options]" >&2; exit 2 ;;
 esac
 
 . "${ROOT}/cluster.env"
@@ -121,6 +132,14 @@ SUBNET_GROUP="${DB_ID}-subnets"
 CREDS_FILE="${ROOT}/secrets/maas-db.env"
 MAAS_NS="redhat-ai-gateway-infra"
 SECRET_NAME="maas-db-config"
+
+# Tracking tags (see the header for why not kubernetes.io/cluster/<infra-id>: owned).
+INFRA_ID="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("infraID",""))' \
+    "${CLUSTER_DIR}/metadata.json" 2>/dev/null || true)"
+TRACK_TAGS=("Key=cluster,Value=${CLUSTER_NAME}" "Key=purpose,Value=rhoai-maas")
+[ -n "$INFRA_ID" ] && TRACK_TAGS+=("Key=openshift-infra-id,Value=${INFRA_ID}")
+# The same tags in the {Key=..,Value=..},... form EC2 --tag-specifications takes.
+track_tags_braced() { local t out=""; for t in "${TRACK_TAGS[@]}"; do out="${out:+$out,}{$t}"; done; printf '%s' "$out"; }
 
 stack_output() {
     aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" \
@@ -265,6 +284,37 @@ if [ "$ACTION" = "secret" ]; then
     exit 0
 fi
 
+# --- tag: add the tracking tags to resources that already exist (adds only) --
+if [ "$ACTION" = "tag" ]; then
+    [ -n "$INFRA_ID" ] || echo "Warning: no infraID in ${CLUSTER_DIR}/metadata.json; tagging without openshift-infra-id." >&2
+    VPC_ID="$(stack_output VpcId || true)"
+    [ -n "$VPC_ID" ] && [ "$VPC_ID" != "None" ] || {
+        echo "Error: could not read VpcId from CloudFormation stack '${VPC_STACK_NAME}'." >&2; exit 1; }
+    ec2_tags=("${TRACK_TAGS[@]}")
+    if db_exists; then
+        aws rds add-tags-to-resource --resource-name "$(db_field DBInstanceArn)" --tags "${TRACK_TAGS[@]}" \
+            && echo "==> Tagged RDS instance ${DB_ID}"
+    else
+        echo "    No RDS instance ${DB_ID}."
+    fi
+    sgn_arn="$(aws rds describe-db-subnet-groups --db-subnet-group-name "$SUBNET_GROUP" \
+        --query 'DBSubnetGroups[0].DBSubnetGroupArn' --output text 2>/dev/null || true)"
+    if [ -n "$sgn_arn" ] && [ "$sgn_arn" != "None" ]; then
+        aws rds add-tags-to-resource --resource-name "$sgn_arn" --tags "Key=Name,Value=${SUBNET_GROUP}" "${TRACK_TAGS[@]}" \
+            && echo "==> Tagged DB subnet group ${SUBNET_GROUP}"
+    else
+        echo "    No DB subnet group ${SUBNET_GROUP}."
+    fi
+    for rid in $(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" "Name=tag:Name,Values=${DB_ID}-db-*" \
+                     --query 'Subnets[].SubnetId' --output text 2>/dev/null) \
+               $(aws ec2 describe-security-groups --filters "Name=vpc-id,Values=${VPC_ID}" "Name=group-name,Values=${SG_NAME}" \
+                     --query 'SecurityGroups[].GroupId' --output text 2>/dev/null); do
+        [ "$rid" = "None" ] && continue
+        aws ec2 create-tags --resources "$rid" --tags "${ec2_tags[@]}" && echo "==> Tagged ${rid}"
+    done
+    exit 0
+fi
+
 # --- create -----------------------------------------------------------------
 if db_exists; then
     echo "RDS instance '${DB_ID}' already exists (status: $(db_field DBInstanceStatus))."
@@ -323,7 +373,7 @@ else:
     echo "    RDS needs a subnet group across two zones; this VPC is single-AZ by design."
     DB_SUBNET_2="$(aws ec2 create-subnet --vpc-id "$VPC_ID" --cidr-block "$DB_CIDR" \
         --availability-zone "$SECOND_AZ" \
-        --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=${DB_ID}-db-${SECOND_AZ}}]" \
+        --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=${DB_ID}-db-${SECOND_AZ}},$(track_tags_braced)]" \
         --query 'Subnet.SubnetId' --output text)"
 else
     echo "==> Reusing database subnet ${DB_SUBNET_2} in ${SECOND_AZ}"
@@ -333,7 +383,8 @@ if ! aws rds describe-db-subnet-groups --db-subnet-group-name "$SUBNET_GROUP" >/
     echo "==> Creating DB subnet group ${SUBNET_GROUP}"
     aws rds create-db-subnet-group --db-subnet-group-name "$SUBNET_GROUP" \
         --db-subnet-group-description "RHOAI MaaS database for ${CLUSTER_NAME}" \
-        --subnet-ids "$PRIVATE_SUBNET" "$DB_SUBNET_2" >/dev/null
+        --subnet-ids "$PRIVATE_SUBNET" "$DB_SUBNET_2" \
+        --tags "Key=Name,Value=${SUBNET_GROUP}" "${TRACK_TAGS[@]}" >/dev/null
 fi
 
 SG_ID="$(aws ec2 describe-security-groups \
@@ -343,6 +394,7 @@ if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
     echo "==> Creating security group ${SG_NAME}"
     SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" --vpc-id "$VPC_ID" \
         --description "PostgreSQL from inside the VPC, for RHOAI MaaS" \
+        --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=${SG_NAME}},$(track_tags_braced)]" \
         --query 'GroupId' --output text)"
     # Scoped to the VPC CIDR, not 0.0.0.0/0. The database has no public address
     # and nothing outside the cluster network needs to reach it.
@@ -391,7 +443,7 @@ create_args=(
     --no-publicly-accessible
     --backup-retention-period 7
     --copy-tags-to-snapshot
-    --tags "Key=Name,Value=${DB_ID}" "Key=cluster,Value=${CLUSTER_NAME}" "Key=purpose,Value=rhoai-maas"
+    --tags "Key=Name,Value=${DB_ID}" "${TRACK_TAGS[@]}"
 )
 [ -n "$ENGINE_VERSION" ] && create_args+=(--engine-version "$ENGINE_VERSION")
 [ "$HA" -eq 1 ] && create_args+=(--multi-az) || create_args+=(--no-multi-az)
