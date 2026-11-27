@@ -228,6 +228,7 @@ if [ "$ACTION" = "destroy" ]; then
           --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)"
     [ -n "$sg" ] && [ "$sg" != "None" ] && aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
     echo "    Done. secrets/maas-db.env and the cluster Secret are left alone."
+    echo "    OGX's metadata database (scripts/ogx-database.sh) lived here and is deleted with the instance."
     exit 0
 fi
 
