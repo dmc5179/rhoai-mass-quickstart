@@ -1044,6 +1044,83 @@ if want workloads; then
         fi
         info "End to end (creates a throwaway sandbox, spends one chat completion): scripts/openshell-smoke-test.sh"
     fi
+    if grep -qE "policy-ols" <<<"$PL"; then
+        head_ "Workloads: Lightspeed"
+        pol_status policy-ols-operator-install policy-ols-config policy-ols-ready
+        ldep="$(run get deploy lightspeed-app-server -n openshift-lightspeed -o name)"
+        lavail="$(run get deploy lightspeed-app-server -n openshift-lightspeed \
+                      -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')"
+        if [ -z "$ldep" ]; then
+            bad "no lightspeed-app-server Deployment in openshift-lightspeed" \
+                "policy-ols-ready above reports what the operator is waiting for."
+        elif [ "$lavail" = "True" ]; then
+            ok "lightspeed-app-server Available"
+        elif [ "$GPU_PARKED" -eq 1 ]; then
+            info "lightspeed-app-server not Available: expected while the GPU is parked"
+        else
+            # The 2026-11-26 failure: the key's MaaS subscription had been
+            # replaced, every call got 403 'requested subscription not found',
+            # and this log tail was the only signal that said why. A parked GPU
+            # also explains Lightspeed being down, so the cause hunt runs only
+            # when the GPU is up.
+            llog="$(run logs deploy/lightspeed-app-server -n openshift-lightspeed -c lightspeed-service-api --tail=50)"
+            if grep -q "requested subscription not found" <<<"$llog"; then
+                bad "lightspeed-app-server not Available: MaaS answers its key with 'requested subscription not found'" \
+                    "The key was minted against a subscription that has since been replaced. Fix: scripts/40-lightspeed.sh key"
+            elif grep -Eq '(^|[^0-9])40[13]([^0-9]|$)' <<<"$llog"; then
+                bad "lightspeed-app-server not Available: MaaS refuses its key (401/403 in the log tail)" \
+                    "Fix: scripts/40-lightspeed.sh key"
+            else
+                bad "lightspeed-app-server not Available" \
+                    "When MaaS refuses the key, the lightspeed-service-api log names it: oc logs deploy/lightspeed-app-server -n openshift-lightspeed -c lightspeed-service-api --tail=50"
+            fi
+        fi
+        # The key's subscription and expiry, which a parked GPU does not explain.
+        # The Secret holds only the token, which is never printed, and nothing on
+        # the cluster records the expiry, so it is derived: MaaS rejects key
+        # lifetimes longer than 2160h, which is also the minting script's
+        # --key-ttl default, so mint time + 2160h is the latest the key can work.
+        # A key minted with a shorter --key-ttl expires sooner than reported.
+        if [ -n "$(run get secret maas-api-key -n openshift-lightspeed -o jsonpath='{.data.apitoken}')" ]; then
+            lupd="$(run get olsconfig cluster -o jsonpath='{.metadata.annotations.rhoai-mass-aws/key-updated}')"
+            lupd_s=""
+            [ -n "$lupd" ] && lupd_s="$(date -u -d "$lupd" +%s 2>/dev/null)"
+            lsubs="$(run get maassubscriptions.maas.opendatahub.io -A \
+                         -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.creationTimestamp}{"\n"}{end}')"
+            if [ -z "$lsubs" ]; then
+                bad "no MaaSSubscription exists: the Lightspeed key names one that is gone" \
+                    "Fix: scripts/40-lightspeed.sh key once a subscription exists again"
+            else
+                # The key was minted against the first subscription in the list at
+                # the time. A subscription created after the last mint cannot be
+                # the one it names; when none predates the mint, that one is gone.
+                lpred=0
+                if [ -n "$lupd_s" ]; then
+                    while read -r _ lsc; do
+                        [ -n "${lsc:-}" ] || continue
+                        lsc_s="$(date -u -d "$lsc" +%s 2>/dev/null)"
+                        if [ -n "$lsc_s" ] && [ "$lsc_s" -le "$lupd_s" ]; then lpred=$(( lpred + 1 )); fi
+                    done <<<"$lsubs"
+                fi
+                lnames="$(awk 'NF{printf "%s%s", sep, $1; sep=" "}' <<<"$lsubs")"
+                if [ -n "$lupd_s" ] && [ "$lpred" -eq 0 ]; then
+                    bad "every MaaSSubscription (${lnames}) was created after the Lightspeed key was last minted, so the subscription it names is gone" \
+                        "Fix: scripts/40-lightspeed.sh key"
+                else
+                    ok "MaaS subscription present: ${lnames}"
+                fi
+            fi
+            if [ -n "$lupd_s" ]; then
+                key_left "Lightspeed" "$(( lupd_s + 2160 * 3600 ))" "Fix: scripts/40-lightspeed.sh key" 336
+            else
+                warn "cannot tell when the Lightspeed MaaS key expires: the OLSConfig carries no readable rhoai-mass-aws/key-updated annotation" \
+                    "scripts/40-lightspeed.sh key re-mints and records the date"
+            fi
+        else
+            bad "no Lightspeed MaaS key in Secret openshift-lightspeed/maas-api-key" \
+                "Fix: scripts/40-lightspeed.sh key"
+        fi
+    fi
 fi
 
 # --- load -------------------------------------------------------------------
