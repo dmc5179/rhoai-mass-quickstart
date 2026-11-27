@@ -12,10 +12,20 @@
 # scripts/48-external-oidc.sh will):
 #
 #   clients   console (confidential), oc-cli (public, direct access grants for
-#             scripted logins), gateway (confidential) and devspaces
-#             (confidential). Every client gets the groups claim mapper and an
-#             audience mapper for all four clients, so the API server accepts
+#             scripted logins), gateway (confidential), devspaces
+#             (confidential) and argocd (confidential; standard flow, direct
+#             access grants off, no PKCE requirement - Argo CD's server-side
+#             flow sends no code_challenge_method). Every client gets an
+#             audience mapper for all five clients, so the API server accepts
 #             any client's token wherever its audiences list includes them.
+#             The groups claim reaches console, oc-cli, gateway and devspaces
+#             through a per-client group membership mapper; Argo CD gets it
+#             through a realm client scope named groups (openid-connect,
+#             include.in.token.scope true, group membership mapper with the
+#             groups claim, full path off, in the ID token, access token and
+#             userinfo), assigned as a default client scope of argocd - Argo CD
+#             requests the scope by name, so it must exist even though the
+#             other clients never ask for it.
 #   users     the usernames in secrets/cluster-users.env plus maas-user from
 #             secrets/maas-user.env. Passwords go in through KeycloakRealmImport
 #             placeholders (${KEY}) backed by the realm-secrets Secret - never
@@ -28,9 +38,14 @@
 # oc: pass them as arguments, or set CONSOLE_HOST, GATEWAY_HOST and
 # DEVSPACES_HOST. The console needs https://<console host>/auth/callback, the
 # gateway https://<gateway host>/oauth2/callback, Dev Spaces
-# https://<devspaces host>/oauth/callback with that host as web origin.
+# https://<devspaces host>/oauth/callback with that host as web origin, and
+# Argo CD https://<argocd host>/auth/callback (plus localhost:8085 for the CLI)
+# with the route origin as web origin. The Argo CD host is the fourth argument,
+# else ARGOCD_HOST, else infra-gitops-server-openshift-gitops.<APPS_DOMAIN>
+# (the GitOps operator's server Route host on an OpenShift-gitops instance);
+# without any of the three the render fails.
 #
-#   oidc_realm_import [console host] [gateway host] [devspaces host]
+#   oidc_realm_import [console host] [gateway host] [devspaces host] [argocd host]
 #       Prints the KeycloakRealmImport (JSON; oc apply -f - takes it).
 #       Missing secrets/cluster-users.env or secrets/maas-user.env are
 #       generated first (umask 077, python secrets.token_urlsafe), in the same
@@ -107,7 +122,7 @@ oidc_realm_secret_env() { # KEY=VALUE lines for the realm-secrets Secret
     local uenv="${ROOT}/secrets/cluster-users.env" menv="${ROOT}/secrets/maas-user.env" \
           oenv="${ROOT}/secrets/keycloak-oidc.env" u v usan k
     _oidc_realm_users_env; _oidc_realm_maas_env
-    for k in CONSOLE_CLIENT_SECRET GATEWAY_CLIENT_SECRET DEVSPACES_CLIENT_SECRET; do
+    for k in CONSOLE_CLIENT_SECRET GATEWAY_CLIENT_SECRET DEVSPACES_CLIENT_SECRET ARGOCD_CLIENT_SECRET; do
         v="$(_oidc_realm_env_get "$oenv" "$k")"
         [ -n "$v" ] || { echo "Error: ${oenv} has no ${k}; the client secrets are created during the Keycloak install" >&2; return 1; }
         printf '%s=%s\n' "$k" "$v"
@@ -127,16 +142,27 @@ oidc_realm_secret_env() { # KEY=VALUE lines for the realm-secrets Secret
     printf 'KC_PW_%s=%s\n' "$(sed 's/[^A-Za-z0-9]/_/g' <<<"$u")" "$v"
 }
 
-oidc_realm_import() { # [console host] [gateway host] [devspaces host] -> prints the CR
+oidc_realm_import() { # [console host] [gateway host] [devspaces host] [argocd host] -> prints the CR
     local chost="${1:-${CONSOLE_HOST:-}}" ghost="${2:-${GATEWAY_HOST:-}}" dhost="${3:-${DEVSPACES_HOST:-}}"
     [ -n "$chost" ] && [ -n "$ghost" ] && [ -n "$dhost" ] || {
         echo "Error: pass the console, gateway and Dev Spaces hosts as arguments, or set" >&2
         echo "       CONSOLE_HOST, GATEWAY_HOST and DEVSPACES_HOST." >&2
         return 1
     }
+    # Argo CD: fourth argument, else ARGOCD_HOST, else the GitOps operator's
+    # server Route host under APPS_DOMAIN.
+    local ahost="${4:-${ARGOCD_HOST:-}}"
+    if [ -z "$ahost" ] && [ -n "${APPS_DOMAIN:-}" ]; then
+        ahost="infra-gitops-server-openshift-gitops.${APPS_DOMAIN}"
+    fi
+    [ -n "$ahost" ] || {
+        echo "Error: no Argo CD server route host; pass it as the fourth argument to" >&2
+        echo "       oidc_realm_import, or set ARGOCD_HOST or APPS_DOMAIN." >&2
+        return 1
+    }
     local uenv="${ROOT}/secrets/cluster-users.env" menv="${ROOT}/secrets/maas-user.env" k groups_json maas_user
     _oidc_realm_users_env; _oidc_realm_maas_env
-    for k in CONSOLE_CLIENT_SECRET GATEWAY_CLIENT_SECRET DEVSPACES_CLIENT_SECRET; do
+    for k in CONSOLE_CLIENT_SECRET GATEWAY_CLIENT_SECRET DEVSPACES_CLIENT_SECRET ARGOCD_CLIENT_SECRET; do
         [ -n "$(_oidc_realm_env_get "${ROOT}/secrets/keycloak-oidc.env" "$k")" ] \
             || { echo "Error: secrets/keycloak-oidc.env has no ${k}; the client secrets are created during the Keycloak install" >&2; return 1; }
     done
@@ -146,8 +172,8 @@ oidc_realm_import() { # [console host] [gateway host] [devspaces host] -> prints
     KC_NAME="$KEYCLOAK_NAME" REALM="$KEYCLOAK_REALM" KC_NS="$KEYCLOAK_NAMESPACE" \
     LIFESPAN="$OIDC_TOKEN_LIFESPAN" \
     C_CONSOLE="$OIDC_CLIENT_CONSOLE" C_CLI="$OIDC_CLIENT_CLI" C_GW="$OIDC_CLIENT_GATEWAY" \
-    C_DEVSPACES="$OIDC_CLIENT_DEVSPACES" \
-    CONSOLE_HOST="$chost" GATEWAY_HOST="$ghost" DEVSPACES_HOST="$dhost" \
+    C_DEVSPACES="$OIDC_CLIENT_DEVSPACES" C_ARGOCD="${OIDC_CLIENT_ARGOCD:-argocd}" \
+    CONSOLE_HOST="$chost" GATEWAY_HOST="$ghost" DEVSPACES_HOST="$dhost" ARGOCD_HOST="$ahost" \
     CLI_PORTS="$OIDC_CLI_CALLBACK_PORTS" ROSTER="$(sed -n '/^#/d; s/=.*//p' "$uenv" | LC_ALL=C sort | tr '\n' ' ')" \
     MAAS_USER="$maas_user" HUB_GROUPS_JSON="$groups_json" \
     python3 -I - <<'PY'
@@ -158,15 +184,16 @@ hub = json.loads(e["HUB_GROUPS_JSON"])
 groups = [{"name": g["name"]} for g in hub]
 members = {g["name"]: g.get("users", []) for g in hub}
 users = sorted(set(u for u in e["ROSTER"].split() if u) | {e["MAAS_USER"]})
+def audiences(client_ids):
+    return [{"name": f"aud-{c}", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
+             "config": {"included.client.audience": c, "id.token.claim": "false", "access.token.claim": "true"}}
+            for c in client_ids]
 def mappers(client_ids):
     m = [{"name": "groups", "protocol": "openid-connect", "protocolMapper": "oidc-group-membership-mapper",
           "config": {"claim.name": "groups", "full.path": "false", "id.token.claim": "true",
                      "access.token.claim": "true", "userinfo.token.claim": "true"}}]
-    for c in client_ids:   # every token is accepted by the API server, whichever client asked
-        m.append({"name": f"aud-{c}", "protocol": "openid-connect", "protocolMapper": "oidc-audience-mapper",
-                  "config": {"included.client.audience": c, "id.token.claim": "false", "access.token.claim": "true"}})
-    return m
-all_clients = [e["C_CONSOLE"], e["C_CLI"], e["C_GW"], e["C_DEVSPACES"]]
+    return m + audiences(client_ids)
+all_clients = [e["C_CONSOLE"], e["C_CLI"], e["C_GW"], e["C_DEVSPACES"], e["C_ARGOCD"]]
 uris = []
 for p in e["CLI_PORTS"].split():
     uris += [f"http://localhost:{p}", f"http://localhost:{p}/*"]
@@ -185,7 +212,29 @@ clients = [
      "redirectUris": [f"https://{e['DEVSPACES_HOST']}/oauth/callback"],
      "webOrigins": [f"https://{e['DEVSPACES_HOST']}"],
      "protocolMappers": mappers(all_clients)},
+    {"clientId": e["C_ARGOCD"], "publicClient": False, "secret": "${ARGOCD_CLIENT_SECRET}",
+     "standardFlowEnabled": True,
+     "directAccessGrantsEnabled": False,   # the lab: standard flow only, no password grant
+     # Argo CD's server-side flow sends no code_challenge_method, so no PKCE requirement
+     # is set (setting one makes every sign-in fail). localhost:8085 is the CLI callback.
+     "redirectUris": [f"https://{e['ARGOCD_HOST']}/auth/callback", "http://localhost:8085/auth/callback"],
+     "webOrigins": [f"https://{e['ARGOCD_HOST']}"],
+     # The groups claim comes from the groups client scope, not a per-client mapper
+     # (Argo CD requests the scope by name). The four built-in scope names are the
+     # realm defaults a UI-created client gets on RHBK 26; listing them keeps them.
+     "defaultClientScopes": ["profile", "email", "roles", "web-origins", "groups"],
+     "protocolMappers": audiences(all_clients)},
 ]
+# Argo CD requests the scope named groups; the realm has none by default. The scope
+# carries the group membership mapper, so the claim rides the ID token, the access
+# token and userinfo whenever the client was granted the scope.
+groups_scope = [{"name": "groups", "protocol": "openid-connect",
+                 "attributes": {"include.in.token.scope": "true"},
+                 "protocolMappers": [{"name": "groups", "protocol": "openid-connect",
+                                      "protocolMapper": "oidc-group-membership-mapper",
+                                      "config": {"claim.name": "groups", "full.path": "false",
+                                                 "id.token.claim": "true", "access.token.claim": "true",
+                                                 "userinfo.token.claim": "true"}}]}]
 user_entries = []
 for u in users:
     gs = [f"/{n}" for n, mem in members.items() if u in mem]
@@ -195,9 +244,10 @@ for u in users:
                          "firstName": u, "lastName": "test", "groups": gs,
                          "credentials": [{"type": "password", "value": "${%s}" % key(u), "temporary": False}]})
 realm = {"realm": e["REALM"], "enabled": True, "accessTokenLifespan": int(e["LIFESPAN"]),
-         "groups": groups, "clients": clients, "users": user_entries}
+         "groups": groups, "clients": clients, "clientScopes": groups_scope, "users": user_entries}
 placeholders = {k: {"secret": {"name": "realm-secrets", "key": k}}
-                for k in ["CONSOLE_CLIENT_SECRET", "GATEWAY_CLIENT_SECRET", "DEVSPACES_CLIENT_SECRET"]
+                for k in ["CONSOLE_CLIENT_SECRET", "GATEWAY_CLIENT_SECRET", "DEVSPACES_CLIENT_SECRET",
+                          "ARGOCD_CLIENT_SECRET"]
                 + [key(u) for u in users]}
 cr = {"apiVersion": "k8s.keycloak.org/v2alpha1", "kind": "KeycloakRealmImport",
       "metadata": {"name": e["REALM"], "namespace": e["KC_NS"]},

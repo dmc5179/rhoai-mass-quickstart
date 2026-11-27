@@ -68,6 +68,7 @@ cat > "${tmp}/secrets/keycloak-oidc.env" <<'ENV'
 CONSOLE_CLIENT_SECRET="fake-console-secret"
 GATEWAY_CLIENT_SECRET="fake-gateway-secret"
 DEVSPACES_CLIENT_SECRET="fake-devspaces-secret"
+ARGOCD_CLIENT_SECRET="fake-argocd-secret"
 ENV
 
 # The library reads ROOT and AUTOSHIFT_DIR inside its functions, so both are
@@ -83,12 +84,23 @@ export AUTOSHIFT_DIR="${tmp}"
 
 # --- render the realm with example hosts ------------------------------------
 cr_json=""
-if ! cr_json="$(oidc_realm_import console.example.test gateway.example.test devspaces.example.test)"; then
+if ! cr_json="$(oidc_realm_import console.example.test gateway.example.test devspaces.example.test argocd.example.test)"; then
     bad "oidc_realm_import rendered the KeycloakRealmImport"
     echo "the library failed to render; aborting" >&2
     exit 1
 fi
 ok "oidc_realm_import rendered the KeycloakRealmImport"
+
+# The Argo CD host is derived from APPS_DOMAIN when the fourth argument is absent,
+# and ARGOCD_HOST wins over both. Neither render is asserted on beyond the host.
+derived_json="$(APPS_DOMAIN=apps.example.test oidc_realm_import console.example.test gateway.example.test devspaces.example.test)"
+override_json="$(APPS_DOMAIN=apps.example.test ARGOCD_HOST=argocd-override.example.test \
+    oidc_realm_import console.example.test gateway.example.test devspaces.example.test)"
+check "the argocd host derives from APPS_DOMAIN" \
+    grep -q '"https://infra-gitops-server-openshift-gitops.apps.example.test/auth/callback"' <<<"$derived_json"
+check "ARGOCD_HOST wins over the APPS_DOMAIN derivation" \
+    grep -q '"https://argocd-override.example.test/auth/callback"' <<<"$override_json"
+unset derived_json override_json
 
 # --- assert on the rendered CR ----------------------------------------------
 # Every check prints its own PASS/FAIL line and the block exits non-zero if
@@ -98,7 +110,9 @@ py_out="$(CR_JSON="$cr_json" \
     CLI_PORTS_EXPECT="$OIDC_CLI_CALLBACK_PORTS" \
     C_CONSOLE="$OIDC_CLIENT_CONSOLE" C_CLI="$OIDC_CLIENT_CLI" \
     C_GW="$OIDC_CLIENT_GATEWAY" C_DS="$OIDC_CLIENT_DEVSPACES" \
+    C_ARGOCD="argocd" ARGOCDD_EXPECT="argocd.example.test" \
     F_CONSOLE="fake-console-secret" F_GW="fake-gateway-secret" F_DS="fake-devspaces-secret" \
+    F_ARGOCD="fake-argocd-secret" \
     F_PW_ALICE="fake-alice-password" F_PW_BOB="fake-bob-password" \
     F_PW_CAROL="fake-carol-password" F_PW_MAAS="fake-maas-password" \
     python3 -I - <<'PY'
@@ -113,23 +127,51 @@ def check(name, cond, detail=""):
 
 clients = realm["clients"]
 cli = next(c for c in clients if c["clientId"] == e["C_CLI"])
+argo = next(c for c in clients if c["clientId"] == e["C_ARGOCD"])
 expect_uris = set()
 for p in e["CLI_PORTS_EXPECT"].split():
     expect_uris |= {f"http://localhost:{p}", f"http://localhost:{p}/*"}
 check("kind is KeycloakRealmImport", cr["kind"] == "KeycloakRealmImport")
-check("4 clients", len(clients) == 4, f"got {len(clients)}")
+check("5 clients", len(clients) == 5, f"got {len(clients)}")
 check(f"{e['C_CLI']} is public with the callback ports and their /* paths",
       cli.get("publicClient") is True and set(cli["redirectUris"]) == expect_uris,
       f"redirectUris {sorted(cli['redirectUris'])}")
+check(f"{e['C_ARGOCD']} is confidential, standard flow, direct access grants off, secret placeholder",
+      argo.get("publicClient") is False and argo.get("standardFlowEnabled") is True
+      and argo.get("directAccessGrantsEnabled") is False
+      and argo.get("secret") == "${ARGOCD_CLIENT_SECRET}")
+check(f"{e['C_ARGOCD']} has the route and CLI redirect URIs and the route origin",
+      set(argo["redirectUris"]) == {f"https://{e['ARGOCDD_EXPECT']}/auth/callback",
+                                    "http://localhost:8085/auth/callback"}
+      and argo["webOrigins"] == [f"https://{e['ARGOCDD_EXPECT']}"],
+      f"redirectUris {sorted(argo['redirectUris'])} webOrigins {argo['webOrigins']}")
+check(f"{e['C_ARGOCD']} has groups among its default client scopes",
+      "groups" in argo.get("defaultClientScopes", []),
+      f"defaultClientScopes {argo.get('defaultClientScopes')}")
 
-all_ids = sorted([e["C_CONSOLE"], e["C_CLI"], e["C_GW"], e["C_DS"]])
+all_ids = sorted([e["C_CONSOLE"], e["C_CLI"], e["C_GW"], e["C_DS"], e["C_ARGOCD"]])
 for c in clients:
     auds = sorted(m["config"]["included.client.audience"] for m in c["protocolMappers"]
                   if m["protocolMapper"] == "oidc-audience-mapper")
     grp = [m for m in c["protocolMappers"] if m["protocolMapper"] == "oidc-group-membership-mapper"]
-    check(f"client {c['clientId']} has 4 audience mappers covering all clients", auds == all_ids,
+    check(f"client {c['clientId']} has 5 audience mappers covering all clients", auds == all_ids,
           f"audiences {auds}")
-    check(f"client {c['clientId']} has the groups mapper", len(grp) == 1)
+    # argocd's groups claim rides the client scope, not a per-client mapper.
+    want_grp = 0 if c["clientId"] == e["C_ARGOCD"] else 1
+    check(f"client {c['clientId']} has {want_grp} groups mapper(s)", len(grp) == want_grp)
+
+scopes = {s["name"]: s for s in realm.get("clientScopes", [])}
+gs = scopes.get("groups")
+check("the realm has one client scope named groups",
+      gs is not None and gs["protocol"] == "openid-connect"
+      and gs.get("attributes", {}).get("include.in.token.scope") == "true")
+gm = [m for m in gs["protocolMappers"] if m["protocolMapper"] == "oidc-group-membership-mapper"] if gs else []
+check("the groups scope carries one group membership mapper with the lab settings",
+      len(gm) == 1 and gm[0]["config"].get("claim.name") == "groups"
+      and gm[0]["config"].get("full.path") == "false"
+      and gm[0]["config"].get("id.token.claim") == "true"
+      and gm[0]["config"].get("access.token.claim") == "true"
+      and gm[0]["config"].get("userinfo.token.claim") == "true")
 
 users = {u["username"] for u in realm["users"]}
 check("users are the fake users plus maas-user",
@@ -143,7 +185,8 @@ for u in realm["users"]:
     check(f"user {u['username']} is a member of exactly its hub groups",
           u["groups"] == membership[u["username"]], f"groups {u['groups']}")
 
-leaked = [k for k in ("F_CONSOLE", "F_GW", "F_DS", "F_PW_ALICE", "F_PW_BOB", "F_PW_CAROL", "F_PW_MAAS")
+leaked = [k for k in ("F_CONSOLE", "F_GW", "F_DS", "F_ARGOCD",
+                      "F_PW_ALICE", "F_PW_BOB", "F_PW_CAROL", "F_PW_MAAS")
           if e[k] in json.dumps(cr)]
 check("no fake secret value appears in the rendered CR", not leaked,
       "leaked: " + ", ".join(leaked))
@@ -151,6 +194,7 @@ check("no fake secret value appears in the rendered CR", not leaked,
 # Placeholder keys are derived from user names (maas-user -> KC_PW_maas_user); the
 # Secret that oidc_realm_secret_env builds must use exactly the same keys.
 expect_ph = {"CONSOLE_CLIENT_SECRET", "GATEWAY_CLIENT_SECRET", "DEVSPACES_CLIENT_SECRET",
+             "ARGOCD_CLIENT_SECRET",
              "KC_PW_alice", "KC_PW_bob", "KC_PW_carol", "KC_PW_maas_user"}
 check("placeholders cover the client secrets and every user password",
       set(cr["spec"]["placeholders"]) == expect_ph,
@@ -183,6 +227,7 @@ fi
 sec_out="$(oidc_realm_secret_env 2>/dev/null)" || true
 got_keys="$(sed 's/=.*//' <<<"$sec_out" | LC_ALL=C sort)"
 want_keys="$(printf '%s\n' CONSOLE_CLIENT_SECRET DEVSPACES_CLIENT_SECRET GATEWAY_CLIENT_SECRET \
+    ARGOCD_CLIENT_SECRET \
     KC_PW_alice KC_PW_bob KC_PW_carol KC_PW_maas_user | LC_ALL=C sort)"
 check "oidc_realm_secret_env prints the expected key names" [ "$got_keys" = "$want_keys" ]
 
