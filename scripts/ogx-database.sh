@@ -105,23 +105,32 @@ print(''.join(secrets.choice(alphabet) for _ in range(32)))"
 }
 
 # run_psql_pod <sql-text> — runs the SQL in a short-lived pod that connects to
-# the instance as the master user with sslmode=require. The pod is removed with
-# --rm; the temporary Secret is removed by the caller's trap.
+# the instance as the master user with sslmode=require. The SQL and the master
+# credentials travel in the temporary Secret (never on a command line, and not on
+# stdin: oc run -i can drop input sent before it attaches, after which psql runs
+# nothing and still exits 0). The pod is removed with --rm; the Secret by the
+# caller's trap. Returns psql's exit status.
 run_psql_pod() {
     local sql="$1"
-    "$OC" delete pod "$BOOTSTRAP_POD" -n default --ignore-not-found --wait=false >/dev/null
+    "$OC" delete pod "$BOOTSTRAP_POD" -n default --ignore-not-found --wait=true >/dev/null
+    # The password and the SQL (which carries the ogx password) come in on file
+    # descriptors 4 and 3; host, port and user are not secret.
     "$OC" create secret generic "$BOOTSTRAP_SECRET" -n default \
-        --from-literal=PGPASSWORD="$MAAS_DB_PASSWORD" \
-        --from-literal=MAAS_DB_HOST="$MAAS_DB_HOST" \
-        --from-literal=MAAS_DB_PORT="$MAAS_DB_PORT" \
-        --from-literal=MAAS_DB_USER="$MAAS_DB_USER" >/dev/null
+        --from-file=PGPASSWORD=/dev/fd/4 --from-file=OGX_SQL=/dev/fd/3 \
+        --from-literal=MAAS_DB_HOST="$MAAS_DB_HOST" --from-literal=MAAS_DB_PORT="$MAAS_DB_PORT" \
+        --from-literal=MAAS_DB_USER="$MAAS_DB_USER" --dry-run=client -o yaml \
+        3<<<"$sql" 4< <(printf '%s' "$MAAS_DB_PASSWORD") \
+        | "$OC" apply -f - >/dev/null
     local overrides
-    overrides="$(jq -n --arg img "$OGX_DB_IMAGE" --arg s "$BOOTSTRAP_SECRET" \
+    # The command goes in the overrides: an overrides container replaces the whole
+    # container, so oc run's own --command arguments would be dropped and the image's
+    # entrypoint (the PostgreSQL server) would run instead.
+    local cmd='printf "%s\n" "$OGX_SQL" | psql "sslmode=require host=${MAAS_DB_HOST} port=${MAAS_DB_PORT} user=${MAAS_DB_USER} dbname=postgres" -v ON_ERROR_STOP=1 -X -f -'
+    overrides="$(jq -n --arg img "$OGX_DB_IMAGE" --arg s "$BOOTSTRAP_SECRET" --arg c "$cmd" \
         '{spec:{restartPolicy:"Never",containers:[{name:"psql",image:$img,
-          envFrom:[{secretRef:{name:$s}}]}]}}')"
-    printf '%s' "$sql" | "$OC" run "$BOOTSTRAP_POD" -n default --rm -i --quiet \
-        --overrides="$overrides" --command -- \
-        /bin/bash -c 'exec psql "sslmode=require host=${MAAS_DB_HOST} port=${MAAS_DB_PORT} user=${MAAS_DB_USER} dbname=postgres" -v ON_ERROR_STOP=1'
+          command:["/bin/bash","-c",$c], envFrom:[{secretRef:{name:$s}}]}]}}')"
+    "$OC" run "$BOOTSTRAP_POD" -n default --rm --attach --quiet --restart=Never \
+        --image="$OGX_DB_IMAGE" --overrides="$overrides" </dev/null
 }
 
 cleanup_bootstrap() {
@@ -139,6 +148,9 @@ DO \$do\$ BEGIN
     END IF;
 END \$do\$;
 ALTER ROLE ${OGX_DB_USER} LOGIN PASSWORD '$1';
+-- PostgreSQL 16: CREATE DATABASE ... OWNER needs the creator to be able to SET ROLE
+-- to the owner, and the RDS master user is not a true superuser. Membership gives it.
+GRANT ${OGX_DB_USER} TO CURRENT_USER;
 SELECT 'CREATE DATABASE ${OGX_DB_NAME} OWNER ${OGX_DB_USER}' WHERE NOT EXISTS (SELECT FROM pg_catalog.pg_database WHERE datname = '${OGX_DB_NAME}')\gexec
 -- Revoking CONNECT on the maas database from PUBLIC is safe for MaaS:
 -- maas-api authenticates as the master user, which keeps its access regardless
@@ -240,7 +252,11 @@ if [ "$ACTION" = "create" ]; then
     ogx_pw="$(gen_password)"
     sql="$(create_sql "$ogx_pw")"
     trap cleanup_bootstrap EXIT
-    run_psql_pod "$sql" >/dev/null
+    if ! psql_out="$(run_psql_pod "$sql" 2>&1)"; then
+        echo "Error: the bootstrap SQL failed:" >&2
+        sed "s/PASSWORD '[^']*'/PASSWORD '********'/g; s/^/    /" <<<"$psql_out" >&2
+        exit 1
+    fi
     trap - EXIT
     cleanup_bootstrap
     umask 077
