@@ -1121,6 +1121,85 @@ if want workloads; then
                 "Fix: scripts/40-lightspeed.sh key"
         fi
     fi
+    # OGX. Gated on an OGXServer existing anywhere, not on a policy: OGX is
+    # deployed from the agent-identity-manual checkout, not from AutoShift, so
+    # there is no policy to look for. Its MaaS key is minted by hand as a MaaS
+    # user into Secret ogx-maas-key (key apikey), and nothing on the cluster
+    # records the expiry, so it is derived the same way as the Lightspeed
+    # key's: a MaaS key cannot outlive 2160h (90 days on 3.5.2), so mint time
+    # + 2160h is the latest the key can work, and the Secret's
+    # creationTimestamp stands in for the mint time. A Secret updated in place
+    # keeps its original creationTimestamp, which reports expiry early and
+    # makes the subscription check lenient, never the reverse. Neither finding
+    # is explained by a parked GPU, so this runs while the GPU is parked too.
+    ogx_key_check() {
+        local ogxs ogx_alt ogx_ns ogx_key_ns ogx_key ogx_created ogx_mint
+        local ogx_subs ogx_names ogx_pred ogx_sc ogx_sc_s fix
+        ogxs="$(run get ogxservers.ogx.io -A \
+                    -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}')"
+        [ -n "$ogxs" ] || return 0
+        head_ "Workloads: OGX"
+        info "OGXServer: $(awk 'NF{printf "%s%s", sep, $0; sep=" "}' <<<"$ogxs")"
+        # The OGX namespace is resolved the way scripts/ogx-database.sh resolves
+        # it: OGX_NAMESPACE in the environment, then OGX_NAMESPACE in the
+        # agent-identity-manual checkout's vars.env, read with sed and never
+        # sourced, and finally agents, the vars.env.example default.
+        if [ -z "${OGX_NAMESPACE:-}" ] \
+           && [ -f "${AGENT_IDENTITY_DIR:-${HOME}/workspace/agent-identity-manual}/vars.env" ]; then
+            OGX_NAMESPACE="$(sed -n 's/^OGX_NAMESPACE=//p' \
+                "${AGENT_IDENTITY_DIR:-${HOME}/workspace/agent-identity-manual}/vars.env" \
+                | head -1 | sed 's/^"//; s/"$//')"
+        fi
+        ogx_ns="${OGX_NAMESPACE:-agents}"
+        ogx_alt="${ogxs%%/*}"
+        ogx_key_ns="$ogx_ns"
+        # The pod mounts the Secret from its own namespace, which the resolved
+        # namespace can drift from when vars.env is stale; fall back to the
+        # first OGXServer's namespace before reporting the key missing.
+        ogx_key="$(run get secret ogx-maas-key -n "$ogx_ns" -o jsonpath='{.data.apikey}')"
+        if [ -z "$ogx_key" ] && [ "$ogx_alt" != "$ogx_ns" ]; then
+            ogx_key="$(run get secret ogx-maas-key -n "$ogx_alt" -o jsonpath='{.data.apikey}')"
+            [ -n "$ogx_key" ] && ogx_key_ns="$ogx_alt"
+        fi
+        fix="Fix: mint a new key as a MaaS user (scripts/maas-user.sh) and update Secret ${ogx_key_ns}/ogx-maas-key; agent-identity-manual GUIDE.md section 4 has the OGX steps"
+        if [ -z "$ogx_key" ]; then
+            bad "no OGX MaaS key in Secret ${ogx_key_ns}/ogx-maas-key (key apikey)" "$fix"
+            return 0
+        fi
+        # The token is never printed; only its presence and age are read.
+        ogx_created="$(run get secret ogx-maas-key -n "$ogx_key_ns" -o jsonpath='{.metadata.creationTimestamp}')"
+        ogx_mint="$(date -u -d "$ogx_created" +%s 2>/dev/null)"
+        ogx_subs="$(run get maassubscriptions.maas.opendatahub.io -A \
+                         -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.creationTimestamp}{"\n"}{end}')"
+        ogx_names="$(awk 'NF{printf "%s%s", sep, $1; sep=" "}' <<<"$ogx_subs")"
+        if [ -z "$ogx_subs" ]; then
+            bad "no MaaSSubscription exists: the OGX key names one that is gone" "$fix"
+        else
+            # The key was minted against some subscription at the time. One
+            # created after the mint cannot be it; when none predates the mint,
+            # the one it named is gone.
+            ogx_pred=0
+            if [ -n "$ogx_mint" ]; then
+                while read -r _ ogx_sc; do
+                    [ -n "${ogx_sc:-}" ] || continue
+                    ogx_sc_s="$(date -u -d "$ogx_sc" +%s 2>/dev/null)"
+                    if [ -n "$ogx_sc_s" ] && [ "$ogx_sc_s" -le "$ogx_mint" ]; then ogx_pred=$(( ogx_pred + 1 )); fi
+                done <<<"$ogx_subs"
+            fi
+            if [ -n "$ogx_mint" ] && [ "$ogx_pred" -eq 0 ]; then
+                bad "every MaaSSubscription (${ogx_names}) was created after the OGX key was minted, so the subscription it names is gone" "$fix"
+            else
+                ok "MaaS subscription present: ${ogx_names}"
+            fi
+        fi
+        if [ -n "$ogx_mint" ]; then
+            # A 336h window warns while the key is within 14 days of expiry.
+            key_left "OGX" "$(( ogx_mint + 2160 * 3600 ))" "$fix" 336
+        else
+            warn "cannot tell when the OGX MaaS key expires: Secret ${ogx_key_ns}/ogx-maas-key has no readable creationTimestamp" "$fix"
+        fi
+    }
+    ogx_key_check
 fi
 
 # --- load -------------------------------------------------------------------
