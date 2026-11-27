@@ -31,6 +31,12 @@
 # on a command line: the bootstrap pod receives the master password through a
 # temporary Secret as PGPASSWORD, and the ogx password travels in the SQL text
 # on stdin.
+#
+# The namespace OGX runs in is resolved in this order: OGX_NAMESPACE in the
+# environment, then OGX_NAMESPACE in the agent-identity-manual checkout's
+# vars.env (AGENT_IDENTITY_DIR, or ~/workspace/agent-identity-manual), read
+# with sed and never sourced, and finally agents, the vars.env.example
+# default.
 
 set -euo pipefail
 
@@ -38,7 +44,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIG_ARGS=("$@")
 
 case "${1:-}" in
-    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,41p' "${BASH_SOURCE[0]}"; exit 0 ;;
 esac
 ACTION="${1:-}"; shift || true
 
@@ -69,8 +75,19 @@ OGX_DB_USER="ogx"
 # The same pinned image family scripts/keycloak-oidc.sh uses for its test
 # database (KEYCLOAK_DB_IMAGE); it carries the psql client.
 OGX_DB_IMAGE="${OGX_DB_IMAGE:-registry.redhat.io/rhel9/postgresql-16:1-1795335911}"
-# Where the OGXServer is deployed, per agent-identity-manual/vars.env.example
-# (OGX_NAMESPACE=agents) and its 10-ogx.yaml.
+# Where the OGXServer is deployed. agent-identity-manual/vars.env.example
+# defaults to agents, and its 10-ogx.yaml deploys there; a rendered vars.env
+# usually names something else (the lab runs agent-id-test), so the checkout's
+# vars.env is consulted before the fallback. The environment wins over both.
+OGX_MANUAL_DIR="${AGENT_IDENTITY_DIR:-${HOME}/workspace/agent-identity-manual}"
+OGX_NAMESPACE="${OGX_NAMESPACE:-}"
+if [ -z "$OGX_NAMESPACE" ] && [ -f "${OGX_MANUAL_DIR}/vars.env" ]; then
+    # sed, never source: the file carries values this script has no business
+    # reading. Quotes, if present, are stripped the way the secret subcommand
+    # strips them below.
+    OGX_NAMESPACE="$(sed -n 's/^OGX_NAMESPACE=//p' "${OGX_MANUAL_DIR}/vars.env" \
+        | head -1 | sed 's/^"//; s/"$//')"
+fi
 OGX_NAMESPACE="${OGX_NAMESPACE:-agents}"
 BOOTSTRAP_POD="ogx-db-bootstrap"
 BOOTSTRAP_SECRET="ogx-db-bootstrap"
