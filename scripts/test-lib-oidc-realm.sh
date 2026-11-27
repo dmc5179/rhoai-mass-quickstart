@@ -173,6 +173,26 @@ check("the groups scope carries one group membership mapper with the lab setting
       and gm[0]["config"].get("access.token.claim") == "true"
       and gm[0]["config"].get("userinfo.token.claim") == "true")
 
+# The OGX audience scope: ogx-api, optional on oc-cli, with an audience mapper for the
+# audience 10-ogx.yaml's AUTH_AUDIENCE checks. Optional, not default: a token must gain
+# aud ogx-api only when the caller asks for the scope.
+osx = scopes.get("ogx-api")
+check("the realm has one client scope named ogx-api (openid-connect, in token scope, no consent)",
+      osx is not None and osx["protocol"] == "openid-connect"
+      and osx.get("attributes", {}).get("include.in.token.scope") == "true"
+      and osx.get("attributes", {}).get("display.on.consent.screen") == "false")
+om = [m for m in osx["protocolMappers"] if m["protocolMapper"] == "oidc-audience-mapper"] if osx else []
+check("the ogx-api scope carries one audience mapper named ogx-api-audience with the lab settings",
+      len(om) == 1 and om[0]["name"] == "ogx-api-audience"
+      and om[0]["config"].get("included.custom.audience") == "ogx-api"
+      and om[0]["config"].get("access.token.claim") == "true"
+      and om[0]["config"].get("id.token.claim") == "false")
+check("oc-cli lists ogx-api among its optional client scopes",
+      cli.get("optionalClientScopes") == ["ogx-api"],
+      f"optionalClientScopes {cli.get('optionalClientScopes')}")
+check("ogx-api is not a default client scope of any client",
+      all("ogx-api" not in c.get("defaultClientScopes", []) for c in clients))
+
 users = {u["username"] for u in realm["users"]}
 check("users are the fake users plus maas-user",
       users == {"alice", "bob", "carol", "maas-user"}, f"users {sorted(users)}")

@@ -25,7 +25,13 @@
 #             groups claim, full path off, in the ID token, access token and
 #             userinfo), assigned as a default client scope of argocd - Argo CD
 #             requests the scope by name, so it must exist even though the
-#             other clients never ask for it.
+#             other clients never ask for it. A second realm client scope
+#             named ogx-api (openid-connect, include.in.token.scope true,
+#             display.on.consent.screen false) carries an audience mapper for
+#             ogx-api, the audience the OGX server checks (agent-identity-manual
+#             10-ogx.yaml, AUTH_AUDIENCE); it is an optional client scope of
+#             oc-cli, so a token requested with scope "openid ogx-api" carries
+#             aud ogx-api and a plain sign-in token is unchanged.
 #   users     the usernames in secrets/cluster-users.env plus maas-user from
 #             secrets/maas-user.env. Passwords go in through KeycloakRealmImport
 #             placeholders (${KEY}) backed by the realm-secrets Secret - never
@@ -203,7 +209,11 @@ clients = [
      "protocolMappers": mappers(all_clients)},
     {"clientId": e["C_CLI"], "publicClient": True, "standardFlowEnabled": True,
      "directAccessGrantsEnabled": True,   # scripted test logins only; never in production
-     "redirectUris": uris, "protocolMappers": mappers(all_clients)},
+     "redirectUris": uris, "protocolMappers": mappers(all_clients),
+     # ogx-api is OPTIONAL here: the audience joins aud only when the caller asks
+     # for scope "openid ogx-api" (scripts/lib-oc-token.sh consumers, demo-trace.sh's
+     # OGX hop), so everyday CLI tokens stay exactly as they were.
+     "optionalClientScopes": ["ogx-api"]},
     {"clientId": e["C_GW"], "publicClient": False, "secret": "${GATEWAY_CLIENT_SECRET}",
      "standardFlowEnabled": True, "redirectUris": [f"https://{e['GATEWAY_HOST']}/oauth2/callback"],
      "protocolMappers": mappers(all_clients)},
@@ -235,6 +245,18 @@ groups_scope = [{"name": "groups", "protocol": "openid-connect",
                                       "config": {"claim.name": "groups", "full.path": "false",
                                                  "id.token.claim": "true", "access.token.claim": "true",
                                                  "userinfo.token.claim": "true"}}]}]
+# The OGX server (agent-identity-manual 10-ogx.yaml) validates tokens against AUTH_AUDIENCE
+# ogx-api. The audience mapper below puts ogx-api in aud when, and only when, the client
+# was granted this scope, so a caller opts in by requesting scope "openid ogx-api" and
+# nobody else's token changes. Consent display is off: the lab shows no consent screens.
+ogx_scope = [{"name": "ogx-api", "protocol": "openid-connect",
+              "attributes": {"include.in.token.scope": "true",
+                             "display.on.consent.screen": "false"},
+              "protocolMappers": [{"name": "ogx-api-audience", "protocol": "openid-connect",
+                                   "protocolMapper": "oidc-audience-mapper",
+                                   "config": {"included.custom.audience": "ogx-api",
+                                              "access.token.claim": "true",
+                                              "id.token.claim": "false"}}]}]
 user_entries = []
 for u in users:
     gs = [f"/{n}" for n, mem in members.items() if u in mem]
@@ -244,7 +266,7 @@ for u in users:
                          "firstName": u, "lastName": "test", "groups": gs,
                          "credentials": [{"type": "password", "value": "${%s}" % key(u), "temporary": False}]})
 realm = {"realm": e["REALM"], "enabled": True, "accessTokenLifespan": int(e["LIFESPAN"]),
-         "groups": groups, "clients": clients, "clientScopes": groups_scope, "users": user_entries}
+         "groups": groups, "clients": clients, "clientScopes": groups_scope + ogx_scope, "users": user_entries}
 placeholders = {k: {"secret": {"name": "realm-secrets", "key": k}}
                 for k in ["CONSOLE_CLIENT_SECRET", "GATEWAY_CLIENT_SECRET", "DEVSPACES_CLIENT_SECRET",
                           "ARGOCD_CLIENT_SECRET"]
