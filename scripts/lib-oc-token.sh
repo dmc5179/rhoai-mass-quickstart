@@ -22,9 +22,14 @@ cluster_is_oidc() {
     [ "$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.type}' 2>/dev/null)" = "OIDC" ]
 }
 
-# oidc_token <user> <password>  ->  prints an access token (empty on failure)
+# oidc_token <user> <password> [scope]  ->  prints an access token (empty on failure)
+# The scope is optional and defaults to openid. Passing a wider scope makes an
+# optional client scope's audience mapper fire: "openid ogx-api" returns a token whose
+# aud carries the OGX audience, which the OGX gateway requires (the agent-identity-manual
+# repository's ogx-token.sh mints exactly that token).
 oidc_token() {
     local iss cid tep
+    local scope="${3:-openid}"
     iss="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].issuer.issuerURL}')"
     cid="$("$OC" get authentications.config.openshift.io cluster -o jsonpath='{.spec.oidcProviders[0].oidcClients[?(@.componentName=="cli")].clientID}')"
     tep="$(curl -sk "${iss}/.well-known/openid-configuration" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token_endpoint",""))')"
@@ -32,7 +37,7 @@ oidc_token() {
     # The password goes to curl on stdin (password@-), never on a command line where any user
     # on the host could read it from the process list.
     printf '%s' "$2" | curl -sk -X POST "$tep" --data-urlencode grant_type=password --data-urlencode client_id="$cid" \
-        --data-urlencode username="$1" --data-urlencode password@- --data-urlencode scope=openid \
+        --data-urlencode username="$1" --data-urlencode password@- --data-urlencode scope="$scope" \
         | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))'
 }
 
