@@ -169,8 +169,10 @@ fi
 # holds is then owned by that user - revoke it there if the user is removed.
 maas_mint_token || exit 1
 echo "==> Minting a MaaS API key as ${MAAS_MINT_IDENTITY} (ttl ${KEY_TTL})"
+# Bearer tokens reach curl through a process substitution: on a command line
+# the token is readable in the process list by any user on the host.
 KEY_RESPONSE="$(curl -sSk --max-time 30 \
-    -H "Authorization: Bearer ${MAAS_MINT_TOKEN}" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$MAAS_MINT_TOKEN") \
     -H "Content-Type: application/json" -X POST \
     -d "{\"name\":\"openshift-lightspeed\",\"description\":\"scripts/40-lightspeed.sh\",\"expiresIn\":\"${KEY_TTL}\",\"subscription\":\"${SUBSCRIPTION}\"}" \
     "${HOST}/maas-api/v1/api-keys" 2>/dev/null || echo '{}')"
@@ -182,17 +184,20 @@ API_KEY="$(jq -r '.key // empty' <<<"$KEY_RESPONSE")"
 }
 
 if [ "$ACTION" = "install" ] && [ -z "$MODEL" ]; then
-    MODEL="$(curl -sSk --max-time 30 -H "Authorization: Bearer ${API_KEY}" \
+    MODEL="$(curl -sSk --max-time 30 \
+        -H @<(printf 'Authorization: Bearer %s\n' "$API_KEY") \
         "${HOST}/maas-api/v1/models" 2>/dev/null | jq -r '.data[0].id // empty')"
     [ -n "$MODEL" ] || { echo "Error: the gateway lists no models." >&2; exit 1; }
 fi
 [ "$ACTION" = "install" ] && echo "==> Model: ${MODEL}"
 
 # --- credentials + config ---------------------------------------------------
-# The key name is always "apitoken" regardless of provider.
+# The key name is always "apitoken" regardless of provider. The value reaches
+# oc on stdin rather than as a --from-literal argument: a command line is
+# readable in the process list by any user on the host.
 echo "==> Storing the key in ${NS}/${SECRET}"
-"$OC" create secret generic "$SECRET" -n "$NS" \
-    --from-literal=apitoken="$API_KEY" \
+printf '%s' "$API_KEY" | "$OC" create secret generic "$SECRET" -n "$NS" \
+    --from-file=apitoken=/dev/stdin \
     --dry-run=client -o yaml | "$OC" apply -f - >/dev/null
 
 if [ "$ACTION" = "key" ]; then
